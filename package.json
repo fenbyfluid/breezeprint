@@ -1,0 +1,12 @@
+{
+  "name": "breezeprint",
+  "version": "1.0.0",
+  "description": "MeshCore Receipt Printer",
+  "main": "index.js",
+  "type": "module",
+  "author": "Erin <fenbyfluid@gmail.com>",
+  "license": "ISC",
+  "dependencies": {
+    "@liamcottle/meshcore.js": "^1.15.0"
+  }
+}
