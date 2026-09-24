@@ -7,6 +7,9 @@
   "author": "Erin <fenbyfluid@gmail.com>",
   "license": "ISC",
   "dependencies": {
-    "@liamcottle/meshcore.js": "^1.15.0"
+    "@liamcottle/meshcore.js": "^1.15.0",
+    "@point-of-sale/receipt-printer-encoder": "^4.0.1",
+    "@point-of-sale/receipt-printer-renderer": "^1.1.0",
+    "grammy": "^1.46.0"
   }
 }
