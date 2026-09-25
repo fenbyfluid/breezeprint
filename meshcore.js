@@ -105,7 +105,7 @@ async function handleChannelMessage(state, message) {
     if (text) {
         console.log(`[meshcore] [channel] [mention] ${senderName ?? "unknown"}: ${text}`);
 
-        const item = { source: "meshcore", from: senderName, type: "text", text };
+        const item = { source: "meshcore", from: senderName, text, timestamp: message.senderTimestamp };
         await state.onItemReceived(item);
     }
 }
@@ -119,7 +119,7 @@ async function handleContactMessage(state, message) {
     const senderName = contactName ?? Buffer.from(message.pubKeyPrefix).toString("hex");
     console.log(`[meshcore] [direct] [message] ${senderName}: ${message.text}`);
 
-    const item = { source: "meshcore", from: senderName, type: "text", text: message.text };
+    const item = { source: "meshcore", from: senderName, text: message.text, timestamp: message.senderTimestamp };
     await state.onItemReceived(item);
 }
 

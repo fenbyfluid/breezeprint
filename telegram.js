@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, InputFile } from "grammy";
 
 async function downloadFile(bot, fileId) {
     const file = await bot.api.getFile(fileId);
@@ -21,7 +21,7 @@ function logMessage(message) {
     } else if (message.sticker) {
         console.log(`[telegram] [${message.chat.type}] [sticker] ${from}: ${message.sticker.emoji ?? ""} (${message.sticker.file_id})`);
     } else if (message.photo) {
-        console.log(`[telegram] [${message.chat.type}] [photo] ${from}: ${message.photo.length} size(s), largest ${message.photo.at(-1).file_id}`);
+        console.log(`[telegram] [${message.chat.type}] [photo] ${from}: ${message.photo.length} size(s), largest ${message.photo.at(-1).file_id}${message.caption ? `, caption: ${message.caption}` : ""}`);
     } else {
         console.log(`[telegram] [${message.chat.type}] [unknown] ${from}:`, message);
     }
@@ -30,9 +30,10 @@ function logMessage(message) {
 async function toReceiptItem(bot, message) {
     const source = "telegram";
     const from = message.from?.username ?? message.from?.id;
+    const timestamp = message.date;
 
     if (message.text) {
-        return { source, from, type: "text", text: message.text };
+        return { source, from, text: message.text, timestamp };
     }
 
     // Animated/video stickers can't be printed, fall back to their static thumbnail
@@ -44,7 +45,7 @@ async function toReceiptItem(bot, message) {
             return null;
         }
 
-        return { source, from, type: "image", data: await downloadFile(bot, fileId) };
+        return { source, from, image: await downloadFile(bot, fileId), timestamp };
     }
 
     // Photos are provided in ascending size order, take the largest
@@ -54,7 +55,7 @@ async function toReceiptItem(bot, message) {
             return null;
         }
 
-        return { source, from, type: "image", data: await downloadFile(bot, fileId) };
+        return { source, from, image: await downloadFile(bot, fileId), text: message.caption, timestamp };
     }
 
     return null;
@@ -82,13 +83,28 @@ export async function startTelegramBot({ onItemReceived } = {}) {
         // Albums arrive as multiple messages sharing a media_group_id - handled individually for now
         const item = await toReceiptItem(bot, ctx.message);
         if (!item) {
-            await ctx.reply("Sorry, I don't know how to print that type of message yet.");
+            await ctx.reply("Sorry, I don't know how to print that type of message yet.", {
+                disable_notification: true,
+                reply_parameters: {
+                    message_id: ctx.message.message_id,
+                },
+            });
+            
             return;
         }
 
-        let image = await onItemReceived(item);
+        await ctx.replyWithDraft("Working on it!", {
+            can_stop: false,
+        });
 
-        await ctx.reply("TODO");
+        const image = await onItemReceived(item);
+
+        await ctx.replyWithPhoto(new InputFile(image, "receipt.png"), {
+            disable_notification: true,
+            reply_parameters: {
+                message_id: ctx.message.message_id,
+            },
+        });
     });
 
     bot.catch((err) => {
