@@ -1,5 +1,6 @@
 import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { ReceiptPrinterRenderer, stitch, toPng } from "@point-of-sale/receipt-printer-renderer";
+import { SerialPort } from "serialport";
 import sharp from "sharp";
 
 // Render a run of only emoji (and joiners/variation selectors) as an image
@@ -182,6 +183,41 @@ function formatTimestamp(timestamp) {
     };
 }
 
+async function sendToPrinter(bytes) {
+    const path = process.env.PRINTER_SERIAL_PATH;
+    if (!path) {
+        console.log('[printer] command bytes:', Buffer.from(bytes).toString("hex"));
+        return;
+    }
+
+    const port = new SerialPort({
+        path,
+        baudRate: Number(process.env.PRINTER_BAUD_RATE) || 9600,
+        autoOpen: false,
+    });
+
+    const call = (method, ...args) => new Promise((resolve, reject) => {
+        port[method](...args, (error) => (error ? reject(error) : resolve()));
+    });
+
+    await call("open");
+    try {
+        await call("write", Buffer.from(bytes));
+        await call("drain");
+    } finally {
+        await call("close").catch((error) => console.error("[printer] Failed to close serial port", error));
+    }
+}
+
+// Items can be delivered concurrently, so jobs must not interleave on the port
+let printQueue = Promise.resolve();
+
+function queuePrint(bytes) {
+    const job = printQueue.then(() => sendToPrinter(bytes));
+    printQueue = job.catch(() => {});
+    return job;
+}
+
 export async function renderReceipt(item) {
     // TODO: Check this against our printer capabilities
     const encoder = new ReceiptPrinterEncoder({
@@ -199,8 +235,11 @@ export async function renderReceipt(item) {
 
     const bytes = encoder.encode();
 
-    // TODO: Send command bytes to a printer
-    console.log('[printer] command bytes:', Buffer.from(bytes, "binary").toString("hex"));
+    try {
+        await queuePrint(bytes);
+    } catch (error) {
+        console.error("[printer] Failed to send to printer", error);
+    }
 
     const renderer = new ReceiptPrinterRenderer({
         language: encoder.language,
