@@ -1,61 +1,11 @@
 import { NodeJSSerialConnection, Constants, Packet } from "@liamcottle/meshcore.js";
 
-if (!process.env.MESHCORE_SERIAL_PATH) {
-    throw new Error("MESHCORE_SERIAL_PATH is required");
-}
-
-const connection = new NodeJSSerialConnection(process.env.MESHCORE_SERIAL_PATH);
-
-const logRxData = process.env.MESHCORE_LOG_RX_DATA === "true";
-
-let mentionRegex = null;
-let companionInfo = null;
-let messageHandlingQueue = Promise.resolve();
-const contactNamesByPrefix = new Map();
-let lastContactRequestAt = null;
-let contactRefreshQueue = Promise.resolve();
-
 function contactPrefixKey(publicKey) {
     return Buffer.from(publicKey).subarray(0, 6).toString("hex");
 }
 
-function requestContacts(since = null) {
-    return new Promise((resolve, reject) => {
-        const requestedAt = Math.floor(Date.now() / 1000);
-        const onComplete = () => {
-            connection.off(Constants.ResponseCodes.EndOfContacts, onComplete);
-            connection.off(Constants.ResponseCodes.Err, onError);
-            resolve();
-        };
-        const onError = (error) => {
-            connection.off(Constants.ResponseCodes.EndOfContacts, onComplete);
-            connection.off(Constants.ResponseCodes.Err, onError);
-            reject(error);
-        };
-
-        connection.once(Constants.ResponseCodes.EndOfContacts, onComplete);
-        connection.once(Constants.ResponseCodes.Err, onError);
-
-        connection.sendCommandGetContacts(since)
-            .then(() => {
-                lastContactRequestAt = requestedAt;
-            })
-            .catch(onError);
-    });
-}
-
-async function refreshContacts() {
-    contactRefreshQueue = contactRefreshQueue
-        .then(() => requestContacts(lastContactRequestAt))
-        .catch((error) => {
-            console.error("MeshCore contact refresh failed", error);
-        });
-
-    await contactRefreshQueue;
-}
-
 function createMentionRegex(displayName) {
-    const escapedDisplayName = displayName.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+    const escapedDisplayName = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`@\\[${escapedDisplayName}\\]`, "i");
 }
 
@@ -76,7 +26,7 @@ function formatContactInfo(info) {
     return `<${Buffer.from(info.publicKey).toString("hex")}:${info.type}:${info.name}>`;
 }
 
-async function addContact(contactInfo) {
+async function addContact(connection, contactInfo) {
     await connection.addOrUpdateContact(
         contactInfo.publicKey,
         contactInfo.type,
@@ -90,7 +40,39 @@ async function addContact(contactInfo) {
     );
 }
 
-async function handleChannelMessage(message) {
+// Resolves with the request timestamp, to be used as `since` on the next call
+function requestContacts(connection, since = null) {
+    return new Promise((resolve, reject) => {
+        const requestedAt = Math.floor(Date.now() / 1000);
+        const onComplete = () => {
+            connection.off(Constants.ResponseCodes.EndOfContacts, onComplete);
+            connection.off(Constants.ResponseCodes.Err, onError);
+            resolve(requestedAt);
+        };
+        const onError = (error) => {
+            connection.off(Constants.ResponseCodes.EndOfContacts, onComplete);
+            connection.off(Constants.ResponseCodes.Err, onError);
+            reject(error);
+        };
+
+        connection.once(Constants.ResponseCodes.EndOfContacts, onComplete);
+        connection.once(Constants.ResponseCodes.Err, onError);
+
+        connection.sendCommandGetContacts(since).catch(onError);
+    });
+}
+
+async function refreshContacts(state) {
+    state.contactRefreshQueue = state.contactRefreshQueue
+        .then(async () => {
+            state.lastContactRequestAt = await requestContacts(state.connection, state.lastContactRequestAt);
+        })
+        .catch((error) => console.error("MeshCore contact refresh failed", error));
+
+    await state.contactRefreshQueue;
+}
+
+async function handleChannelMessage(state, message) {
     const senderMatch = message.text.match(/^([^:]+):\s*/);
     const senderName = senderMatch ? senderMatch[1] : null;
 
@@ -99,20 +81,20 @@ async function handleChannelMessage(message) {
     if (contactInfo) {
         // If we don't know the contact, add them to our contacts list
         const contactKey = contactPrefixKey(contactInfo.publicKey);
-        if (!contactNamesByPrefix.has(contactKey)) {
-            await addContact(contactInfo);
+        if (!state.contactNamesByPrefix.has(contactKey)) {
+            await addContact(state.connection, contactInfo);
         }
 
         // If we have our companion info, send it back as a response
-        if (companionInfo) {
-            await connection.sendChannelTextMessage(message.channelIdx, formatContactInfo(companionInfo));
+        if (state.companionInfo) {
+            await state.connection.sendChannelTextMessage(message.channelIdx, formatContactInfo(state.companionInfo));
         }
 
         console.log(`[meshcore] [channel] [contact] ${message.text}`);
         return;
     }
 
-    const mentionMatch = mentionRegex?.exec(message.text);
+    const mentionMatch = state.mentionRegex?.exec(message.text);
     if (!mentionMatch) {
         // If it's not a contact and not a mention, ignore it for now
         console.log(`[meshcore] [channel] [message] ${message.text}`);
@@ -124,14 +106,12 @@ async function handleChannelMessage(message) {
         console.log(`[meshcore] [channel] [mention] ${senderName ?? "unknown"}: ${text}`);
 
         const item = { source: "meshcore", from: senderName, type: "text", text };
-
-        // TODO: Hand off `item` to the receipt rendering logic
-        console.log(item);
+        await state.onItemReceived(item);
     }
 }
 
-async function handleContactMessage(message) {
-    const contactName = contactNamesByPrefix.get(contactPrefixKey(message.pubKeyPrefix));
+async function handleContactMessage(state, message) {
+    const contactName = state.contactNamesByPrefix.get(contactPrefixKey(message.pubKeyPrefix));
     if (!contactName) {
         console.warn("Received direct message from unknown MeshCore contact");
     }
@@ -140,67 +120,83 @@ async function handleContactMessage(message) {
     console.log(`[meshcore] [direct] [message] ${senderName}: ${message.text}`);
 
     const item = { source: "meshcore", from: senderName, type: "text", text: message.text };
-
-    // TODO: Hand off `item` to the receipt rendering logic
-    console.log(item);
+    await state.onItemReceived(item);
 }
 
-async function handleWaitingMessage(message) {
+async function handleWaitingMessage(state, message) {
     if (message.channelMessage) {
-        await handleChannelMessage(message.channelMessage);
+        await handleChannelMessage(state, message.channelMessage);
     } else if (message.contactMessage) {
-        await handleContactMessage(message.contactMessage);
+        await handleContactMessage(state, message.contactMessage);
     }
 }
 
-async function fetchWaitingMessages() {
-    messageHandlingQueue = messageHandlingQueue
+async function fetchWaitingMessages(state) {
+    state.messageHandlingQueue = state.messageHandlingQueue
         .then(async () => {
-            const waitingMessages = await connection.getWaitingMessages();
+            const waitingMessages = await state.connection.getWaitingMessages();
             for (const message of waitingMessages) {
-                await handleWaitingMessage(message);
+                await handleWaitingMessage(state, message);
             }
         })
-        .catch((error) => {
-            console.error("MeshCore message handling failed", error);
-        });
+        .catch((error) => console.error("MeshCore message handling failed", error));
 
-    await messageHandlingQueue;
+    await state.messageHandlingQueue;
 }
 
-connection.on("connected", async () => {
-    companionInfo = await connection.getSelfInfo();
-    mentionRegex = createMentionRegex(companionInfo.name);
+export async function startMeshCore({ onItemReceived } = {}) {
+    if (!process.env.MESHCORE_SERIAL_PATH) {
+        console.warn("[meshcore] MESHCORE_SERIAL_PATH not set; skipping MeshCore startup.");
+        return null;
+    }
 
-    // update clock on meshcore device
-    await connection.syncDeviceTime();
+    const connection = new NodeJSSerialConnection(process.env.MESHCORE_SERIAL_PATH);
 
-    await refreshContacts();
+    const state = {
+        connection,
+        onItemReceived,
+        companionInfo: null,
+        mentionRegex: null,
+        contactNamesByPrefix: new Map(),
+        lastContactRequestAt: null,
+        contactRefreshQueue: Promise.resolve(),
+        messageHandlingQueue: Promise.resolve(),
+    };
 
-    console.log(`Connected as '${companionInfo.name}' with ${contactNamesByPrefix.size} known contacts`);
+    connection.on("connected", async () => {
+        state.companionInfo = await connection.getSelfInfo();
+        state.mentionRegex = createMentionRegex(state.companionInfo.name);
 
-    await fetchWaitingMessages();
-});
+        // update clock on meshcore device
+        await connection.syncDeviceTime();
 
-connection.on(Constants.PushCodes.MsgWaiting, async () => {
-    // Request new messages as they arrive
-    await fetchWaitingMessages();
-});
+        await refreshContacts(state);
 
-connection.on(Constants.PushCodes.Advert, async () => {
-    // Update contacts when a new one is added
-    await refreshContacts();
-});
+        console.log(`[meshcore] Connected as '${state.companionInfo.name}' with ${state.contactNamesByPrefix.size} known contacts`);
 
-connection.on(Constants.ResponseCodes.Contact, (contact) => {
-    contactNamesByPrefix.set(contactPrefixKey(contact.publicKey), contact.advName);
-});
-
-if (logRxData) {
-    connection.on(Constants.PushCodes.LogRxData, async ({ lastSnr, lastRssi, raw }) => {
-        const packet = Packet.fromBytes(raw);
-        console.log(`[rx] SNR ${lastSnr}, RSSI ${lastRssi}:`, packet);
+        await fetchWaitingMessages(state);
     });
-}
 
-await connection.connect();
+    connection.on(Constants.PushCodes.MsgWaiting, async () => {
+        // Request new messages as they arrive
+        await fetchWaitingMessages(state);
+    });
+
+    connection.on(Constants.PushCodes.Advert, async () => {
+        // Update contacts when a new one is added
+        await refreshContacts(state);
+    });
+
+    connection.on(Constants.ResponseCodes.Contact, (contact) => {
+        state.contactNamesByPrefix.set(contactPrefixKey(contact.publicKey), contact.advName);
+    });
+
+    if (process.env.MESHCORE_LOG_RX_DATA === "true") {
+        connection.on(Constants.PushCodes.LogRxData, async ({ lastSnr, lastRssi, raw }) => {
+            const packet = Packet.fromBytes(raw);
+            console.log(`[meshcore] [rx] SNR ${lastSnr}, RSSI ${lastRssi}:`, packet);
+        });
+    }
+
+    await state.connection.connect();
+}
