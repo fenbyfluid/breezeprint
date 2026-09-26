@@ -2,9 +2,11 @@ import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { ReceiptPrinterRenderer, stitch, toPng } from "@point-of-sale/receipt-printer-renderer";
 import { SerialPort } from "serialport";
 import sharp from "sharp";
+import { CustomCharacters } from "./custom-characters.js";
 
 // Render a run of only emoji (and joiners/variation selectors) as an image
 const EMOJI_ONLY_REGEX = /^(?=.*\p{Extended_Pictographic})[\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F\u200D\p{Zs}\t]+$/u;
+const INLINE_EMOJI_REGEX = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function centerImage(image, printableWidth) {
@@ -16,7 +18,7 @@ function centerImage(image, printableWidth) {
     const rightPad = printableWidth - image.info.width - leftPad;
 
     return sharp(image.data, { raw: image.info })
-        .extend({ left: leftPad, right: rightPad, background: { r: 255, g: 255, b: 255 } })
+        .extend({ left: leftPad, right: rightPad, background: "white" })
         .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 }
 
@@ -24,11 +26,21 @@ function centerImage(image, printableWidth) {
  * @param {ReceiptPrinterEncoder} encoder 
  * @param {{ text?: string, image?: Buffer, source: string, from: string, timestamp: number }} item 
  */
-async function renderItem(encoder, item) {
+export async function renderItem(encoder, item) {
+    const itemTimestamp = new Date(item.timestamp * 1000);
+    const timeLabel = [
+        String(itemTimestamp.getHours()).padStart(2, '0'),
+        String(itemTimestamp.getMinutes()).padStart(2, '0')
+    ].join(":");
+    const dateLabel = [
+        String(itemTimestamp.getDate()).padStart(2, '0'),
+        String(itemTimestamp.getMonth() + 1).padStart(2, '0'),
+        String(itemTimestamp.getFullYear() - 2000).padStart(2, '0')
+    ].join("/");
+
     // Header
-    const { date, time } = formatTimestamp(item.timestamp);
     encoder.newline();
-    encoder.line(alignLeftRightLine(time, date, encoder.columns));
+    encoder.line(alignLeftRightLine(timeLabel, dateLabel, encoder.columns));
     encoder.rule();
     encoder.newline();
     
@@ -43,6 +55,7 @@ async function renderItem(encoder, item) {
         // Shrink to fit the printable width, never enlarge
         // encoder.image() assumes 4 bytes (RGBA) per pixel, so force an alpha channel here
         const resized = await sharp(item.image, { autoOrient: true })
+            .trim({ lineArt: true })
             .resize({ width: Math.floor(encoder.printableWidth * maxBodyPct), withoutEnlargement: true })
             .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 
@@ -54,20 +67,20 @@ async function renderItem(encoder, item) {
 
     if (item.text) {
         if (EMOJI_ONLY_REGEX.test(item.text)) {
-            const dpi = 580; // This doesn't seem to work on Linux, set so macOS looks similar
             const spacer = process.platform === "darwin" ? "\u2002" : ""; // Apple Emoji needs some more space
             const emojiText = item.text.replace(/\s/gu, "");
+            const renderSize = Math.floor(encoder.printableWidth * maxBodyPct);
             const spaced = Array.from(GRAPHEME_SEGMENTER.segment(emojiText), ({ segment }) => segment).join(spacer);
-            const rendered = await sharp({ text: { text: spaced, dpi, rgba: true } })
-                .resize({ width: Math.floor(encoder.printableWidth * maxBodyPct) })
+            const rendered = await sharp({ text: { text: spaced, width: renderSize, height: renderSize, wrap: "none", rgba: true } })
+                .trim({ lineArt: true })
+                .resize(renderSize, renderSize, { fit: "inside", background: "white" })
+                .flatten({ background: "white" })
                 .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 
             const image = await centerImage(rendered, encoder.printableWidth);
 
             encoder.image(image, { algorithm: "atkinson" });
         } else {
-            // TODO: Support inline emoji rendering
-            // TODO: libvips (sharp) can handle this, but it'll need a suitable pixel font
             const maxTextColumns = Math.ceil(encoder.columns * 0.85);
             const { lines, wrapped } = wrapText(item.text, maxTextColumns);
             
@@ -78,13 +91,13 @@ async function renderItem(encoder, item) {
             if (!wrapped) {
                 encoder.align("center");
                 for (const line of lines) {
-                    encoder.line(line);
+                    await renderLineWithEmoji(encoder, line);
                 }
                 encoder.align("left");
             } else {
                 const leftPadding = Math.floor((encoder.columns - maxTextColumns) / 2);
                 for (const line of lines) {
-                    encoder.line(`${" ".repeat(leftPadding)}${line}`);
+                    await renderLineWithEmoji(encoder, `${" ".repeat(leftPadding)}${line}`);
                 }
             }
 
@@ -97,12 +110,11 @@ async function renderItem(encoder, item) {
     // Trailer
     encoder.newline();
     encoder.rule();
-    renderItemTrailer(encoder, item);
+    await renderItemTrailer(encoder, item);
 }
 
-function renderItemTrailer(encoder, item) {
+async function renderItemTrailer(encoder, item) {
     // TODO: Would like to display these as a small logo instead
-    // TODO: Having trouble rendering inline images, which also affects text emoji rendering
     const knownSources = {
         meshcore: { label: "MeshCore" },
         telegram: { label: "Telegram", prefix: "@" },
@@ -112,18 +124,20 @@ function renderItemTrailer(encoder, item) {
     const fromLabel = `${sourceInfo.prefix || ""}${item.from}`;
     const sourceLabel = sourceInfo.label;
     
-    encoder.line(alignLeftRightLine(fromLabel, sourceLabel, encoder.columns));
+    await renderLineWithEmoji(encoder, alignLeftRightLine(fromLabel, sourceLabel, encoder.columns));
 }
 
 function alignLeftRightLine(left, right, width) {
-    const rightText = fitToWidth(right, width);
-    const leftText = fitToWidth(left, Math.max(0, width - rightText.length - 1));
-
-    return `${leftText}${" ".repeat(Math.max(0, width - leftText.length - rightText.length))}${rightText}`;
+    return `${left}${" ".repeat(width - textWidth(left) - textWidth(right))}${right}`;
 }
 
-function fitToWidth(text, width) {
-    return Array.from(text).slice(0, width).join("");
+function characterWidth(segment) {
+    return INLINE_EMOJI_REGEX.test(segment) ? 2 : 1;
+}
+
+function textWidth(text) {
+    return Array.from(GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment)
+        .reduce((columns, segment) => columns + characterWidth(segment), 0);
 }
 
 function wrapText(text, width) {
@@ -131,56 +145,84 @@ function wrapText(text, width) {
     let wrapped = false;
 
     for (const paragraph of text.split(/\r?\n/u)) {
-        const paragraphStart = lines.length;
         let line = "";
+        let columns = 0;
 
         for (const word of paragraph.trim().split(/\s+/u).filter(Boolean)) {
-            const characters = Array.from(word);
-
-            while (characters.length > width) {
-                wrapped = true;
-                if (line) {
-                    lines.push(line);
-                    line = "";
-                }
-                lines.push(characters.splice(0, width).join(""));
-            }
-
-            const remainingWord = characters.join("");
-            if (!remainingWord) {
-                continue;
-            }
-
-            if (line && Array.from(line).length + 1 + characters.length > width) {
+            const characters = Array.from(GRAPHEME_SEGMENTER.segment(word), ({ segment }) => segment);
+            const wordWidth = characters.reduce((sum, segment) => sum + characterWidth(segment), 0);
+            if (columns && columns + 1 + wordWidth > width) {
                 wrapped = true;
                 lines.push(line);
-                line = remainingWord;
-            } else {
-                line = line ? `${line} ${remainingWord}` : remainingWord;
+                line = "";
+                columns = 0;
+            }
+
+            if (columns) {
+                line += " ";
+                columns++;
+            }
+            for (const segment of characters) {
+                const size = characterWidth(segment);
+                if (columns + size > width) {
+                    wrapped = true;
+                    lines.push(line);
+                    line = "";
+                    columns = 0;
+                }
+                line += segment;
+                columns += size;
             }
         }
 
-        if (line || lines.length === paragraphStart) {
-            lines.push(line);
-        }
+        lines.push(line);
     }
 
     return { lines, wrapped };
 }
 
-function formatTimestamp(timestamp) {
-    const now = new Date(timestamp * 1000);
+async function renderLineWithEmoji(encoder, line) {
+    const characters = new CustomCharacters(encoder);
+    let plain = "";
 
-    const year = String(now.getFullYear() - 2000).padStart(2, '0');
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
+    for (const { segment } of GRAPHEME_SEGMENTER.segment(line)) {
+        if (!INLINE_EMOJI_REGEX.test(segment)) {
+            plain += segment;
+            continue;
+        }
 
-    return {
-        date: `${day}/${month}/${year}`,
-        time: `${hours}:${minutes}`,
-    };
+        if (plain) {
+            encoder.text(plain);
+            plain = "";
+        }
+
+        if (!characters.has(segment)) {
+            try {
+                const renderSize = 24;
+                const image = await sharp({ text: { text: segment, width: renderSize, height: renderSize, wrap: "none", rgba: true } })
+                    .trim({ lineArt: true })
+                    .resize(renderSize, renderSize, { fit: "contain", background: "white" })
+                    .flatten({ background: "white" })
+                    .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
+
+                characters.define(segment, image, { algorithm: "atkinson", autoCenter: true });
+            } catch (error) {
+                console.error("[printer] Failed to rasterize emoji", segment, error);
+            }
+        }
+
+        if (characters.has(segment)) {
+            characters.print(segment);
+        } else {
+            encoder.text("??");
+        }
+    }
+
+    if (plain) {
+        encoder.text(plain);
+    }
+
+    encoder.newline();
 }
 
 async function sendToPrinter(bytes) {
