@@ -14,8 +14,17 @@ async function downloadFile(bot, fileId) {
     return Buffer.from(await response.arrayBuffer());
 }
 
+export function telegramSenderName(user) {
+    const displayName = [user?.first_name, user?.last_name]
+        .filter((name) => typeof name === "string" && name.trim())
+        .map((name) => name.trim())
+        .join(" ");
+    const senderId = user?.username ? `@${user.username}` : String(user?.id ?? "Unknown");
+    return `${senderId} \u00b7 ${displayName || "Unknown"}`;
+}
+
 function logMessage(message) {
-    const from = message.from?.username ?? message.from?.id;
+    const from = telegramSenderName(message.from);
     if (message.text) {
         console.log(`[telegram] [${message.chat.type}] [text] ${from}: ${message.text}`);
     } else if (message.sticker) {
@@ -29,7 +38,7 @@ function logMessage(message) {
 
 async function toReceiptItem(bot, message) {
     const source = "telegram";
-    const from = message.from?.username ?? message.from?.id;
+    const from = telegramSenderName(message.from);
     const timestamp = message.date;
 
     if (message.text) {

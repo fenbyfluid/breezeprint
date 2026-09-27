@@ -97,9 +97,9 @@ const sticker = Buffer.from([
 const image = await renderReceipt({
     image: sticker,
     // text: "\u{1F97A}\u{1F49C}\u{1F98A}",
-    text: "Hello 👍 from the mesh\nAnother 👩‍💻 line",
+    text: "Hello 👍 from the mesh\nAnother 🦊 line 🦊",
     source: "meshcore",
-    from: "Breezeprint 🖨️",
+    from: "Breezeprint 🖨️ This is a very long sender name that should truncate",
     timestamp: Math.floor(Date.now() / 1000),
 });
 

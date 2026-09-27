@@ -30,9 +30,8 @@ test("defines adjacent glyphs and renders dots in their respective cells", async
     const encoder = createEncoder();
     const characters = new CustomCharacters(encoder);
     const dots = [[0, 0], [12, 8], [35, 23]];
-    assert.equal(characters.define("icon", await canvas(36, dots)), 3);
     encoder.text("X");
-    assert.equal(characters.print("icon"), 3);
+    assert.equal(characters.print(await canvas(36, dots)), 3);
     encoder.text("!");
     encoder.newline();
 
@@ -54,8 +53,7 @@ test("auto-centers the inked pixels within the canvas", async () => {
     const encoder = createEncoder();
     const characters = new CustomCharacters(encoder);
     const dots = [[8, 18], [9, 18], [8, 19], [9, 19]];
-    characters.define("icon", await canvas(12, dots), { autoCenter: true });
-    characters.print("icon");
+    characters.print(await canvas(12, dots), { autoCenter: true });
     encoder.newline();
 
     const renderer = new ReceiptPrinterRenderer({
@@ -81,20 +79,19 @@ test("auto-centers the inked pixels within the canvas", async () => {
     assert.deepEqual(inked, dots.map(([column, row]) => [column - 3, row - 8]));
 });
 
-test("reusing a key switches glyphs on only while printing its ASCII code", async () => {
+test("each print defines the next codes and switches glyphs on only while printing them", async () => {
     const encoder = createEncoder();
     encoder.codepage("auto");
     const characters = new CustomCharacters(encoder);
-    characters.define("icon", await canvas(12));
+    const image = await canvas(12);
     encoder.text("A");
-    characters.print("icon");
+    characters.print(image);
     encoder.text("!");
-    characters.print("icon");
+    characters.print(image);
     encoder.text("B");
     encoder.newline();
 
     const bytes = Buffer.from(encoder.encode());
-    const definition = Buffer.from([0x1b, 0x26, 3, 0x21, 0x21]);
     const selected = Buffer.from([0x1b, 0x25, 1]);
     const standard = Buffer.from([0x1b, 0x25, 0]);
     const first = bytes.indexOf(selected);
@@ -102,39 +99,45 @@ test("reusing a key switches glyphs on only while printing its ASCII code", asyn
     const second = bytes.indexOf(selected, firstEnd + standard.length);
     const secondEnd = bytes.indexOf(standard, second);
 
-    assert.ok(bytes.indexOf(definition) >= 0);
-    assert.equal(bytes.indexOf(definition, bytes.indexOf(definition) + definition.length), -1);
+    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, 0x21, 0x21])) >= 0);
+    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, 0x22, 0x22])) >= 0);
     assert.ok(first >= 0 && firstEnd > first && second > firstEnd && secondEnd > second);
     assert.ok(bytes.subarray(first + selected.length, firstEnd).includes(0x21));
-    assert.ok(bytes.subarray(second + selected.length, secondEnd).includes(0x21));
+    assert.ok(bytes.subarray(second + selected.length, secondEnd).includes(0x22));
     assert.ok(bytes.subarray(firstEnd + standard.length, second).includes(0x21));
     assert.ok(bytes.subarray(secondEnd + standard.length).includes(0x42));
+});
+
+test("does not modify the source image when dithering", async () => {
+    const image = await sharp(Buffer.alloc(12 * 24 * 4, 128), { raw: { width: 12, height: 24, channels: 4 } })
+        .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
+    const before = Buffer.from(image.data);
+    new CustomCharacters(createEncoder()).print(image, { algorithm: "atkinson", autoCenter: true });
+    assert.deepEqual(image.data, before);
 });
 
 test("rejects malformed raw input without reserving a code", async () => {
     const encoder = createEncoder();
     const characters = new CustomCharacters(encoder);
     const image = await canvas(12);
-    assert.throws(() => characters.define("icon", { ...image, info: { ...image.info, width: 13 } }), /12\*N/);
+    assert.throws(() => characters.print({ ...image, info: { ...image.info, width: 13 } }), /12\*N/);
     for (const malformed of [
         { ...image, info: { ...image.info, channels: 3 } },
         { ...image, info: { ...image.info, depth: "ushort" } },
         { ...image, data: image.data.subarray(0, -1) },
     ]) {
-        assert.throws(() => characters.define("icon", malformed), /raw 8-bit RGBA/);
+        assert.throws(() => characters.print(malformed), /raw 8-bit RGBA/);
     }
-    assert.equal(characters.has("icon"), false);
-    characters.define("icon", image);
-    assert.deepEqual([...characters.bytes("icon")], [0x1b, 0x25, 1, 0x21, 0x1b, 0x25, 0]);
-    assert.throws(() => characters.define("icon", image), /already defined/);
+    assert.equal(CustomCharacters.columns(image), 1);
+    characters.print(image);
+    assert.ok(Buffer.from(encoder.encode()).indexOf(Buffer.from([0x1b, 0x26, 3, 0x21, 0x21])) >= 0);
 });
 
-test("slot exhaustion leaves existing keys intact", async () => {
+test("rejects glyphs wider than the line or beyond the remaining slots", async () => {
+    const tooWide = await canvas(12 * 49);
+    assert.throws(() => new CustomCharacters(createEncoder()).print(tooWide), /printable line width/);
     const characters = new CustomCharacters(createEncoder());
-    characters.define("full", await canvas(12 * 94));
-    const overflow = await canvas(12);
-    assert.throws(() => characters.define("overflow", overflow), /No printable custom character slots/);
-    assert.equal(characters.has("overflow"), false);
-    assert.equal(characters.width("full"), 94);
-    assert.throws(() => characters.print("full"), /printable line width/);
+    const full = await canvas(12 * 48);
+    characters.print(full);
+    assert.throws(() => characters.print(full), /No printable custom character slots/);
 });

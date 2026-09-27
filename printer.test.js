@@ -3,12 +3,12 @@ import test from "node:test";
 import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { renderItem } from "./printer.js";
 
-const item = { source: "telegram", from: "user", timestamp: 1720000000 };
+const item = { source: "test", from: "user", timestamp: 1720000000 };
 
-async function receipt(text, from = item.from) {
+async function receipt(text, from = item.from, source = item.source) {
     const encoder = new ReceiptPrinterEncoder({ columns: 48, imageMode: "column", feedBeforeCut: 0, feedAfterBlock: false, newline: "\n" });
     encoder.initialize();
-    await renderItem(encoder, { ...item, text, from });
+    await renderItem(encoder, { ...item, text, from, source });
     return Buffer.from(encoder.encode());
 }
 
@@ -23,11 +23,11 @@ test("preserves plain text and explicit empty lines without downloading glyphs",
     assert.ok(bytes.indexOf(Buffer.from("Second line")) > bytes.indexOf(Buffer.from("Hello world")));
 });
 
-test("defines each distinct emoji grapheme once per line and restores ordinary text", async () => {
+test("defines every emoji grapheme on its line and restores ordinary text", async () => {
     const bytes = await receipt("Go 👍👍 👩‍💻 👩‍💻 🇬🇧 1️⃣ done");
     const selected = Buffer.from([0x1b, 0x25, 1]);
     const standard = Buffer.from([0x1b, 0x25, 0]);
-    assert.equal(countCommands(bytes, [0x1b, 0x26, 3]), 4);
+    assert.equal(countCommands(bytes, [0x1b, 0x26, 3]), 6);
     assert.equal(countCommands(bytes, selected), 6);
     assert.equal(countCommands(bytes, standard), 6);
     assert.ok(bytes.indexOf(Buffer.from("done"), bytes.lastIndexOf(standard)) > 0);
@@ -45,14 +45,19 @@ test("wraps after a 41-column word containing emoji, then redefines on the next 
     assert.ok(bytes.indexOf(Buffer.from("again"), firstLineEnd) > firstLineEnd);
 });
 
-test("right-aligns the source after a wide emoji in the sender name", async () => {
-    for (const [name, spaces] of [[`${"a".repeat(36)}👍`, 1], [`${"a".repeat(37)}👩‍💻`, 0]]) {
+test("uses two custom characters and a two-column gap for overflowing sender names", async () => {
+    for (const name of [`${"a".repeat(42)}👍`, `${"a".repeat(42)}👩‍💻`, "a".repeat(60)]) {
         const bytes = await receipt("Hello", name);
-        const trailer = bytes.lastIndexOf(Buffer.from("@"));
-        const selected = bytes.indexOf(Buffer.from([0x1b, 0x25, 1]), trailer);
-        const standard = bytes.indexOf(Buffer.from([0x1b, 0x25, 0]), selected);
-        const source = bytes.indexOf(Buffer.from("Telegram"), standard);
-        assert.ok(trailer >= 0 && trailer < selected && selected < standard && standard < source);
-        assert.equal(bytes.subarray(standard + 3, source).filter((byte) => byte === 0x20).length, spaces);
+        const definition = Buffer.from([0x1b, 0x26, 3, 0x21, 0x22]);
+        const selectCustom = Buffer.from([0x1b, 0x25, 1]);
+        const selectStandard = Buffer.from([0x1b, 0x25, 0]);
+        const definitionIndex = bytes.indexOf(definition);
+        const customIndex = bytes.indexOf(selectCustom, definitionIndex + 79);
+        const standardIndex = bytes.indexOf(selectStandard, customIndex + selectCustom.length);
+        const source = bytes.indexOf(Buffer.from("test"), standardIndex);
+        assert.ok(definitionIndex >= 0);
+        assert.ok(customIndex > definitionIndex && standardIndex > customIndex && standardIndex < source);
+        assert.equal(standardIndex - (customIndex + 6), 2);
+        assert.equal(bytes.subarray(standardIndex, source).filter((byte) => byte === 0x20).length, 2);
     }
 });

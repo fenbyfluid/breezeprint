@@ -116,7 +116,8 @@ async function handleContactMessage(state, message) {
         console.warn("Received direct message from unknown MeshCore contact");
     }
 
-    const senderName = contactName ?? Buffer.from(message.pubKeyPrefix).toString("hex");
+    const senderId = Buffer.from(message.pubKeyPrefix).subarray(0, 3).toString("hex").toUpperCase();
+    const senderName = `${senderId} \u00b7 ${contactName ?? "Unknown"}`;
     console.log(`[meshcore] [direct] [message] ${senderName}: ${message.text}`);
 
     const item = { source: "meshcore", from: senderName, text: message.text, timestamp: message.senderTimestamp };

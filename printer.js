@@ -40,7 +40,7 @@ export async function renderItem(encoder, item) {
 
     // Header
     encoder.newline();
-    encoder.line(alignLeftRightLine(timeLabel, dateLabel, encoder.columns));
+    await printLine(encoder, ...alignLeftRight([timeLabel], [dateLabel], encoder.columns));
     encoder.rule();
     encoder.newline();
     
@@ -82,7 +82,7 @@ export async function renderItem(encoder, item) {
             encoder.image(image, { algorithm: "atkinson" });
         } else {
             const maxTextColumns = Math.ceil(encoder.columns * 0.85);
-            const { lines, wrapped } = wrapText(item.text, maxTextColumns);
+            const { lines, wrapped } = wrapParts(await toParts(item.text), maxTextColumns);
             
             if (item.image || lines.length < 3) {
                 encoder.newline();
@@ -91,13 +91,13 @@ export async function renderItem(encoder, item) {
             if (!wrapped) {
                 encoder.align("center");
                 for (const line of lines) {
-                    await renderLineWithEmoji(encoder, line);
+                    await printLine(encoder, ...line);
                 }
                 encoder.align("left");
             } else {
                 const leftPadding = Math.floor((encoder.columns - maxTextColumns) / 2);
                 for (const line of lines) {
-                    await renderLineWithEmoji(encoder, `${" ".repeat(leftPadding)}${line}`);
+                    await printLine(encoder, " ".repeat(leftPadding), ...line);
                 }
             }
 
@@ -114,80 +114,224 @@ export async function renderItem(encoder, item) {
 }
 
 async function renderItemTrailer(encoder, item) {
-    // TODO: Would like to display these as a small logo instead
+    // The icons here are all 36x24 1-bit gifs, the icons are aligned 1px from the right edge of the canvas
     const knownSources = {
-        meshcore: { label: "MeshCore" },
-        telegram: { label: "Telegram", prefix: "@" },
+        meshcore: { 
+            label: "MeshCore",
+            icon: "R0lGODlhJAAYAPABAAAAAP///yH5BAQAAAAALAAAAAAkABgAAAJmjA1wy73pTlKxIhgntXk6zXEgM4YdJnlpiAalq8JtU76xvH13XN/nNuq1bDzVbqjJHSnLR9KpxDRTxCgTaZ1erqhqlsoF+nTd4rdShYpz5PX5wnpv2SY1bVyft/Mk/JYPZTEDOFMAADs=",
+        },
+        telegram: {
+            label: "Telegram",
+            icon: "R0lGODlhJAAYAPABAAAAAP///yH5BAQAAAAALAAAAAAkABgAAAJNjI+pe+DAomzPzYuqxld7zngiBGajWBqnupUniWIvGYzdTMUhnuvJbOn5TCtiMTIEgoLGY4qlfAqdTyBTCrVhf9RttuJdDMNC8o5mKAAAOw==",
+        },
+        discord: { 
+            label: "Discord",
+            icon: "R0lGODlhJAAYAPMPAAAAAA8PDx8fHyAgID8/P09PT39/f4+Pj5+fn6CgoL+/v8DAwM/Pz9/f3+/v7////yH5BAQAAAAALAAAAAAkABgAAAR18MlJ5QCgTty011iYScuyicnniWzrqpQrz/Az360B43yo9kDdCtj7EIugIzLmKkhkEgK04mIwRZTDi2LYTrQh61WkGGOpPnTLnD6d3Sx22xaH159KoDzvpfNxe39veHU4AYSDEwh9Ri0OMAKJPyFCNXiWlx4RADs=",
+        },
     };
     
     const sourceInfo = knownSources[item.source] || { label: item.source };
-    const fromLabel = `${sourceInfo.prefix || ""}${item.from}`;
-    const sourceLabel = sourceInfo.label;
-    
-    await renderLineWithEmoji(encoder, alignLeftRightLine(fromLabel, sourceLabel, encoder.columns));
+
+    const source = sourceInfo.icon
+        ? { image: await sharp(Buffer.from(sourceInfo.icon, "base64")).raw().ensureAlpha().toBuffer({ resolveWithObject: true }) }
+        : sourceInfo.label;
+
+    await printLine(encoder, ...alignLeftRight(await toParts(item.from), await toParts(source), encoder.columns));
 }
 
-function alignLeftRightLine(left, right, width) {
-    return `${left}${" ".repeat(width - textWidth(left) - textWidth(right))}${right}`;
-}
+/**
+ * A part is either plain text or `{ image, options? }`, a raw (12*N)x24 RGBA image printed as custom characters.
+ * Strings are split into plain text and rasterized emoji parts.
+ */
+async function toParts(...args) {
+    const parts = [];
 
-function characterWidth(segment) {
-    return INLINE_EMOJI_REGEX.test(segment) ? 2 : 1;
-}
-
-function textWidth(text) {
-    return Array.from(GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment)
-        .reduce((columns, segment) => columns + characterWidth(segment), 0);
-}
-
-function wrapText(text, width) {
-    const lines = [];
-    let wrapped = false;
-
-    for (const paragraph of text.split(/\r?\n/u)) {
-        let line = "";
-        let columns = 0;
-
-        for (const word of paragraph.trim().split(/\s+/u).filter(Boolean)) {
-            const characters = Array.from(GRAPHEME_SEGMENTER.segment(word), ({ segment }) => segment);
-            const wordWidth = characters.reduce((sum, segment) => sum + characterWidth(segment), 0);
-            if (columns && columns + 1 + wordWidth > width) {
-                wrapped = true;
-                lines.push(line);
-                line = "";
-                columns = 0;
-            }
-
-            if (columns) {
-                line += " ";
-                columns++;
-            }
-            for (const segment of characters) {
-                const size = characterWidth(segment);
-                if (columns + size > width) {
-                    wrapped = true;
-                    lines.push(line);
-                    line = "";
-                    columns = 0;
-                }
-                line += segment;
-                columns += size;
-            }
+    for (const arg of args) {
+        if (typeof arg !== "string") {
+            parts.push(arg);
+            continue;
         }
 
-        lines.push(line);
+        let plain = "";
+
+        for (const { segment } of GRAPHEME_SEGMENTER.segment(arg)) {
+            if (!INLINE_EMOJI_REGEX.test(segment)) {
+                plain += segment;
+                continue;
+            }
+
+            if (plain) {
+                parts.push(plain);
+                plain = "";
+            }
+
+            parts.push(await rasterizeEmoji(segment));
+        }
+
+        if (plain) {
+            parts.push(plain);
+        }
     }
+
+    return parts;
+}
+
+async function rasterizeEmoji(emoji) {
+    try {
+        const renderSize = 24;
+        const image = await sharp({ text: { text: emoji, width: renderSize, height: renderSize, wrap: "none", rgba: true } })
+            .trim({ lineArt: true })
+            .resize(renderSize, renderSize, { fit: "contain", background: "white" })
+            .flatten({ background: "white" })
+            .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
+
+        return { image, options: { algorithm: "atkinson", autoCenter: true } };
+    } catch (error) {
+        console.error("[printer] Failed to rasterize emoji", emoji, error);
+        return "?";
+    }
+}
+
+function partWidth(part) {
+    if (typeof part !== "string") {
+        return CustomCharacters.columns(part.image);
+    }
+
+    return Array.from(GRAPHEME_SEGMENTER.segment(part)).length;
+}
+
+function alignLeftRight(left, right, width) {
+    const leftWidth = left.reduce((sum, part) => sum + partWidth(part), 0);
+    const rightWidth = right.reduce((sum, part) => sum + partWidth(part), 0);
+
+    const gapWidth = width - leftWidth - rightWidth;
+    if (gapWidth >= 2) {
+        return [...left, " ".repeat(gapWidth), ...right];
+    }
+
+    const availableLeftWidth = width - rightWidth - 2;
+    const truncated = [];
+    let remainingWidth = Math.max(0, availableLeftWidth - 2);
+    let truncatedWidth = 0;
+    outer: for (const part of left) {
+        if (typeof part !== "string") {
+            const size = partWidth(part);
+            if (size > remainingWidth) break;
+            truncated.push(part);
+            remainingWidth -= size;
+            truncatedWidth += size;
+            continue;
+        }
+
+        for (const { segment } of GRAPHEME_SEGMENTER.segment(part)) {
+            const size = partWidth(segment);
+            if (size > remainingWidth) break outer;
+            truncated.push(segment);
+            remainingWidth -= size;
+            truncatedWidth += size;
+        }
+    }
+
+    if (availableLeftWidth >= 2) {
+        const ellipsisPart = getEllipsisPart();
+        truncated.push(ellipsisPart);
+        truncatedWidth += partWidth(ellipsisPart);
+    }
+    return [...truncated, " ".repeat(Math.max(2, width - truncatedWidth - rightWidth)), ...right];
+}
+
+function getEllipsisPart() {
+    const ellipsis = Buffer.alloc(24 * 24 * 4, 255);
+
+    const periodPixels = [
+        [1, 14], [2, 14],
+        [0, 15], [1, 15], [2, 15], [3, 15],
+        [0, 16], [1, 16], [2, 16], [3, 16],
+        [1, 17], [2, 17],
+    ];
+
+    for (const left of [4, 10, 16]) {
+        for (const [x, y] of periodPixels) {
+            const offset = (y * 24 + left + x) * 4;
+            ellipsis.fill(0, offset, offset + 3);
+        }
+    }
+
+    return {
+        image: {
+            data: ellipsis,
+            info: { width: 24, height: 24, channels: 4, depth: "uchar" },
+        },
+    };
+}
+
+// Breaks on whitespace within text parts; image parts join whatever word they touch
+function wrapParts(parts, width) {
+    const lines = [];
+    let wrapped = false;
+    let line = [];
+    let columns = 0;
+    let word = [];
+    let wordWidth = 0;
+
+    const pushLine = () => {
+        lines.push(line);
+        line = [];
+        columns = 0;
+    };
+
+    const flushWord = () => {
+        if (!word.length) {
+            return;
+        }
+        if (columns && columns + 1 + wordWidth > width) {
+            wrapped = true;
+            pushLine();
+        }
+        if (columns) {
+            line.push(" ");
+            columns++;
+        }
+        for (const atom of word) {
+            const size = partWidth(atom);
+            if (columns + size > width) {
+                wrapped = true;
+                pushLine();
+            }
+            line.push(atom);
+            columns += size;
+        }
+        word = [];
+        wordWidth = 0;
+    };
+
+    for (const part of parts) {
+        const atoms = typeof part === "string" ? Array.from(GRAPHEME_SEGMENTER.segment(part), ({ segment }) => segment) : [part];
+        for (const atom of atoms) {
+            if (atom === "\n" || atom === "\r\n") {
+                flushWord();
+                pushLine();
+            } else if (typeof atom === "string" && /^\s+$/u.test(atom)) {
+                flushWord();
+            } else {
+                word.push(atom);
+                wordWidth += partWidth(atom);
+            }
+        }
+    }
+    flushWord();
+    pushLine();
 
     return { lines, wrapped };
 }
 
-async function renderLineWithEmoji(encoder, line) {
+async function printLine(encoder, ...args) {
     const characters = new CustomCharacters(encoder);
     let plain = "";
 
-    for (const { segment } of GRAPHEME_SEGMENTER.segment(line)) {
-        if (!INLINE_EMOJI_REGEX.test(segment)) {
-            plain += segment;
+    for (const part of await toParts(...args)) {
+        if (typeof part === "string") {
+            plain += part;
             continue;
         }
 
@@ -195,27 +339,8 @@ async function renderLineWithEmoji(encoder, line) {
             encoder.text(plain);
             plain = "";
         }
-
-        if (!characters.has(segment)) {
-            try {
-                const renderSize = 24;
-                const image = await sharp({ text: { text: segment, width: renderSize, height: renderSize, wrap: "none", rgba: true } })
-                    .trim({ lineArt: true })
-                    .resize(renderSize, renderSize, { fit: "contain", background: "white" })
-                    .flatten({ background: "white" })
-                    .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
-
-                characters.define(segment, image, { algorithm: "atkinson", autoCenter: true });
-            } catch (error) {
-                console.error("[printer] Failed to rasterize emoji", segment, error);
-            }
-        }
-
-        if (characters.has(segment)) {
-            characters.print(segment);
-        } else {
-            encoder.text("??");
-        }
+        
+        characters.print(part.image, part.options);
     }
 
     if (plain) {
