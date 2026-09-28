@@ -168,8 +168,11 @@ export async function startMeshCore({ onItemReceived } = {}) {
         state.companionInfo = await connection.getSelfInfo();
         state.mentionRegex = createMentionRegex(state.companionInfo.name);
 
-        // update clock on meshcore device
-        await connection.syncDeviceTime();
+        try {
+            await connection.syncDeviceTime();
+        } catch (error) {
+            console.warn("[meshcore] Device time sync failed");
+        }
 
         await refreshContacts(state);
 

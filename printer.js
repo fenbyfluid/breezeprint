@@ -1,6 +1,6 @@
 import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { ReceiptPrinterRenderer, stitch, toPng } from "@point-of-sale/receipt-printer-renderer";
-import { SerialPort } from "serialport";
+import { writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { CustomCharacters } from "./custom-characters.js";
 
@@ -39,7 +39,6 @@ export async function renderItem(encoder, item) {
     ].join("/");
 
     // Header
-    encoder.newline();
     await printLine(encoder, ...alignLeftRight([timeLabel], [dateLabel], encoder.columns));
     encoder.rule();
     encoder.newline();
@@ -339,7 +338,7 @@ async function printLine(encoder, ...args) {
             encoder.text(plain);
             plain = "";
         }
-        
+
         characters.print(part.image, part.options);
     }
 
@@ -351,29 +350,13 @@ async function printLine(encoder, ...args) {
 }
 
 async function sendToPrinter(bytes) {
-    const path = process.env.PRINTER_SERIAL_PATH;
+    const path = process.env.PRINTER_DEVICE_PATH;
     if (!path) {
-        console.log('[printer] command bytes:', Buffer.from(bytes).toString("hex"));
+        console.log("[printer] command bytes:", Buffer.from(bytes).toString("hex"));
         return;
     }
 
-    const port = new SerialPort({
-        path,
-        baudRate: Number(process.env.PRINTER_BAUD_RATE) || 9600,
-        autoOpen: false,
-    });
-
-    const call = (method, ...args) => new Promise((resolve, reject) => {
-        port[method](...args, (error) => (error ? reject(error) : resolve()));
-    });
-
-    await call("open");
-    try {
-        await call("write", Buffer.from(bytes));
-        await call("drain");
-    } finally {
-        await call("close").catch((error) => console.error("[printer] Failed to close serial port", error));
-    }
+    await writeFile(path, bytes, { flag: "a" });
 }
 
 // Items can be delivered concurrently, so jobs must not interleave on the port
@@ -386,24 +369,27 @@ function queuePrint(bytes) {
 }
 
 export async function renderReceipt(item) {
-    // TODO: Check this against our printer capabilities
     const encoder = new ReceiptPrinterEncoder({
         columns: 48,
         imageMode: "column",
-        // We don't want any feed in our rendered images, figure out the real printer later
-        feedBeforeCut: 0,
+        feedBeforeCut: 5,
         feedAfterBlock: false,
         newline: "\n",
     });
 
+    // Encode in segments so the printer and renderer can each get their own leading/trailing commands
     encoder.initialize();
+    const initBytes = encoder.encode();
+    encoder.newline();
+    const leadingNewlineBytes = encoder.encode();
     await renderItem(encoder, item);
+    encoder.newline();
+    const bodyBytes = encoder.encode();
     encoder.cut('partial');
-
-    const bytes = encoder.encode();
+    const cutBytes = encoder.encode();
 
     try {
-        await queuePrint(bytes);
+        await queuePrint(Buffer.concat([initBytes, bodyBytes, cutBytes]));
     } catch (error) {
         console.error("[printer] Failed to send to printer", error);
     }
@@ -415,7 +401,7 @@ export async function renderReceipt(item) {
         capabilities: encoder.printerCapabilities,
     });
 
-    const items = renderer.render(bytes);
+    const items = renderer.render(Buffer.concat([initBytes, leadingNewlineBytes, bodyBytes]));
 
     // Combine the rendered items into a single paper bitmap
     const paper = stitch(items);
