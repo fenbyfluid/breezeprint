@@ -81,7 +81,7 @@ async function handleChannelMessage(state, message) {
     if (contactInfo) {
         // If we don't know the contact, add them to our contacts list
         const contactKey = contactPrefixKey(contactInfo.publicKey);
-        if (!state.contactNamesByPrefix.has(contactKey)) {
+        if (!state.contactsByPrefix.has(contactKey)) {
             await addContact(state.connection, contactInfo);
         }
 
@@ -106,22 +106,34 @@ async function handleChannelMessage(state, message) {
         console.log(`[meshcore] [channel] [mention] ${senderName ?? "unknown"}: ${text}`);
 
         const item = { source: "meshcore", from: senderName, text, timestamp: message.senderTimestamp };
-        await state.onItemReceived(item);
+        const { printError } = await state.onItemReceived(item);
+
+        if (printError && senderName) {
+            await state.connection
+                .sendChannelTextMessage(message.channelIdx, `@[${senderName}]: Warning: Not printed (${printError.message})`)
+                .catch((replyError) => console.error("[meshcore] failed to send warning", replyError));
+        }
     }
 }
 
 async function handleContactMessage(state, message) {
-    const contactName = state.contactNamesByPrefix.get(contactPrefixKey(message.pubKeyPrefix));
-    if (!contactName) {
+    const contact = state.contactsByPrefix.get(contactPrefixKey(message.pubKeyPrefix));
+    if (!contact) {
         console.warn("Received direct message from unknown MeshCore contact");
     }
 
     const senderId = Buffer.from(message.pubKeyPrefix).subarray(0, 3).toString("hex").toUpperCase();
-    const senderName = `${senderId} \u00b7 ${contactName ?? "Unknown"}`;
+    const senderName = `${senderId} \u00b7 ${contact?.name ?? "Unknown"}`;
     console.log(`[meshcore] [direct] [message] ${senderName}: ${message.text}`);
 
     const item = { source: "meshcore", from: senderName, text: message.text, timestamp: message.senderTimestamp };
-    await state.onItemReceived(item);
+    const { printError } = await state.onItemReceived(item);
+
+    if (printError && contact) {
+        await state.connection
+            .sendTextMessage(contact.publicKey, `Warning: Not printed (${printError.message})`)
+            .catch((replyError) => console.error("[meshcore] failed to send warning", replyError));
+    }
 }
 
 async function handleWaitingMessage(state, message) {
@@ -153,7 +165,7 @@ export async function startMeshCore({ serialPath, logRxData = false, onItemRecei
         onItemReceived,
         companionInfo: null,
         mentionRegex: null,
-        contactNamesByPrefix: new Map(),
+        contactsByPrefix: new Map(),
         lastContactRequestAt: null,
         contactRefreshQueue: Promise.resolve(),
         messageHandlingQueue: Promise.resolve(),
@@ -171,7 +183,7 @@ export async function startMeshCore({ serialPath, logRxData = false, onItemRecei
 
         await refreshContacts(state);
 
-        console.log(`[meshcore] Connected as '${state.companionInfo.name}' with ${state.contactNamesByPrefix.size} known contacts`);
+        console.log(`[meshcore] Connected as '${state.companionInfo.name}' with ${state.contactsByPrefix.size} known contacts`);
 
         await fetchWaitingMessages(state);
     });
@@ -187,7 +199,7 @@ export async function startMeshCore({ serialPath, logRxData = false, onItemRecei
     });
 
     connection.on(Constants.ResponseCodes.Contact, (contact) => {
-        state.contactNamesByPrefix.set(contactPrefixKey(contact.publicKey), contact.advName);
+        state.contactsByPrefix.set(contactPrefixKey(contact.publicKey), { name: contact.advName, publicKey: contact.publicKey });
     });
 
     if (logRxData) {

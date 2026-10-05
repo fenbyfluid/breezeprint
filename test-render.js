@@ -94,7 +94,7 @@ const sticker = Buffer.from([
     "NQCat/fZ61a90lBZhlzK5zs0TGjaMiwjF+fPyYqUYwSK80zgoA6knsAwr4hvxCJt0KBkA1zr0UxkN6jLmaZ4sjvhe9ydLHgAECPOAAAAAAAAAAAAAAAAAA=="
 ].join(""), "base64");
 
-const image = await renderReceipt({
+const { image } = await renderReceipt({
     image: sticker,
     // text: "\u{1F97A}\u{1F49C}\u{1F98A}",
     text: "Hello 👍 from the mesh\nAnother 🦊 line 🦊",

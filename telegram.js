@@ -101,9 +101,11 @@ export async function startTelegramBot({ token, onItemReceived } = {}) {
             can_stop: false,
         });
 
-        const image = await onItemReceived(item);
+        const { image, printError } = await onItemReceived(item);
 
+        // The image is still produced when the printer itself fails
         await ctx.replyWithPhoto(new InputFile(image, "receipt.png"), {
+            caption: printError ? `Warning: Not printed (${printError.message})` : undefined,
             disable_notification: true,
             reply_parameters: {
                 message_id: ctx.message.message_id,

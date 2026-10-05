@@ -352,10 +352,19 @@ async function printLine(encoder, ...args) {
 async function sendToPrinter(path, bytes) {
     if (!path) {
         console.log("[printer] command bytes:", Buffer.from(bytes).toString("hex"));
-        return;
+
+        throw new Error("no printer configured");
     }
 
-    await writeFile(path, bytes, { flag: "a" });
+    try {
+        await writeFile(path, bytes, { flag: "a" });
+    } catch (error) {
+        if (error.code === "ENOENT") {
+            throw new Error("printer not connected", { cause: error });
+        }
+        
+        throw new Error("unknown error", { cause: error });
+    }
 }
 
 // Items can be delivered concurrently, so jobs must not interleave on the port
@@ -387,10 +396,12 @@ export async function renderReceipt(item, { devicePath } = {}) {
     encoder.cut('partial');
     const cutBytes = encoder.encode();
 
+    let printError = null;
     try {
         await queuePrint(devicePath, Buffer.concat([initBytes, bodyBytes, cutBytes]));
     } catch (error) {
         console.error("[printer] Failed to send to printer", error);
+        printError = error;
     }
 
     const renderer = new ReceiptPrinterRenderer({
@@ -417,5 +428,5 @@ export async function renderReceipt(item, { devicePath } = {}) {
         padded.data.set(sourceRow, paddedStart);
     }
 
-    return await toPng(padded);
+    return { image: await toPng(padded), printError };
 }

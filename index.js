@@ -14,13 +14,13 @@ const config = {
 };
 
 const createOnItemReceived = (name) => async (item) => {
-    const image = await renderReceipt(item, { devicePath: config.printerDevicePath });
+    const result = await renderReceipt(item, { devicePath: config.printerDevicePath });
 
     console.log(`[index] [${name}] Processed item`,
         item,
-        `data:image/png;base64,${Buffer.from(image, "binary").toString("base64")}`);
+        `data:image/png;base64,${Buffer.from(result.image, "binary").toString("base64")}`);
 
-    return image;
+    return result;
 };
 
 if (config.telegramBotTokens.length === 0) {
