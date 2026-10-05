@@ -349,8 +349,7 @@ async function printLine(encoder, ...args) {
     encoder.newline();
 }
 
-async function sendToPrinter(bytes) {
-    const path = process.env.PRINTER_DEVICE_PATH;
+async function sendToPrinter(path, bytes) {
     if (!path) {
         console.log("[printer] command bytes:", Buffer.from(bytes).toString("hex"));
         return;
@@ -362,13 +361,13 @@ async function sendToPrinter(bytes) {
 // Items can be delivered concurrently, so jobs must not interleave on the port
 let printQueue = Promise.resolve();
 
-function queuePrint(bytes) {
-    const job = printQueue.then(() => sendToPrinter(bytes));
+function queuePrint(path, bytes) {
+    const job = printQueue.then(() => sendToPrinter(path, bytes));
     printQueue = job.catch(() => {});
     return job;
 }
 
-export async function renderReceipt(item) {
+export async function renderReceipt(item, { devicePath } = {}) {
     const encoder = new ReceiptPrinterEncoder({
         columns: 48,
         imageMode: "column",
@@ -389,7 +388,7 @@ export async function renderReceipt(item) {
     const cutBytes = encoder.encode();
 
     try {
-        await queuePrint(Buffer.concat([initBytes, bodyBytes, cutBytes]));
+        await queuePrint(devicePath, Buffer.concat([initBytes, bodyBytes, cutBytes]));
     } catch (error) {
         console.error("[printer] Failed to send to printer", error);
     }

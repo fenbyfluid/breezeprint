@@ -70,14 +70,9 @@ async function toReceiptItem(bot, message) {
     return null;
 }
 
-export async function startTelegramBot({ onItemReceived } = {}) {
-    if (!process.env.TELEGRAM_BOT_TOKEN) {
-        console.warn("[telegram] TELEGRAM_BOT_TOKEN not set; skipping Telegram startup.");
-        return null;
-    }
-
+export async function startTelegramBot({ token, onItemReceived } = {}) {
     // Create a bot object
-    const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
+    const bot = new Bot(token);
 
     // Handle the start command explicitly as it's the first interaction with the bot
     bot.command("start", async (ctx) => {

@@ -145,13 +145,8 @@ async function fetchWaitingMessages(state) {
     await state.messageHandlingQueue;
 }
 
-export async function startMeshCore({ onItemReceived } = {}) {
-    if (!process.env.MESHCORE_SERIAL_PATH) {
-        console.warn("[meshcore] MESHCORE_SERIAL_PATH not set; skipping MeshCore startup.");
-        return null;
-    }
-
-    const connection = new NodeJSSerialConnection(process.env.MESHCORE_SERIAL_PATH);
+export async function startMeshCore({ serialPath, logRxData = false, onItemReceived } = {}) {
+    const connection = new NodeJSSerialConnection(serialPath);
 
     const state = {
         connection,
@@ -195,7 +190,7 @@ export async function startMeshCore({ onItemReceived } = {}) {
         state.contactNamesByPrefix.set(contactPrefixKey(contact.publicKey), contact.advName);
     });
 
-    if (process.env.MESHCORE_LOG_RX_DATA === "true") {
+    if (logRxData) {
         connection.on(Constants.PushCodes.LogRxData, async ({ lastSnr, lastRssi, raw }) => {
             const packet = Packet.fromBytes(raw);
             console.log(`[meshcore] [rx] SNR ${lastSnr}, RSSI ${lastRssi}:`, packet);
