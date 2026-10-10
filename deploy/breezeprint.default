@@ -1,0 +1,27 @@
+# BreezePrint configuration, read by systemd (EnvironmentFile).
+# Values are unquoted-or-quoted KEY=value; no shell expansion is performed.
+
+# Path to the receipt printer device (required to print).
+PRINTER_DEVICE_PATH=/dev/usb/lp0
+
+# Whitespace-separated MeshCore serial device paths. Leave empty to disable MeshCore.
+MESHCORE_SERIAL_PATH=""
+
+# Log raw MeshCore RX data ("true" to enable).
+#MESHCORE_LOG_RX_DATA=false
+
+# Whitespace-separated Telegram bot tokens. Leave empty to disable Telegram.
+TELEGRAM_BOT_TOKEN=""
+
+# GPIO pin that switches printer power (via pinctrl). Leave unset to disable power control.
+# Requires PRINTER_DEVICE_PATH.
+#PRINTER_POWER_GPIO=24
+
+# Hours of inactivity before the printer is powered off (default 36).
+#PRINTER_POWER_IDLE_HOURS=36
+
+# Seconds to wait for the printer device to appear after power on (default 30).
+#PRINTER_POWER_WAIT_SECONDS=30
+
+# Milliseconds to wait after the device appears before printing (default 1000).
+#PRINTER_POWER_SETTLE_MS=1000

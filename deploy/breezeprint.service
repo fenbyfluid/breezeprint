@@ -1,0 +1,18 @@
+[Unit]
+Description=BreezePrint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@APP_DIR@
+EnvironmentFile=-/etc/default/breezeprint
+ExecStart=@NODE@ @APP_DIR@/index.js
+Restart=on-failure
+RestartSec=10
+# Printing (lp), serial ports (dialout), and GPIO via pinctrl (gpio)
+SupplementaryGroups=lp dialout gpio
+
+[Install]
+WantedBy=multi-user.target
