@@ -384,6 +384,8 @@ function queuePrint(path, bytes, power) {
     return job;
 }
 
+const CODEPAGE_MAPPING = "youku";
+
 export async function renderReceipt(item, { devicePath, power } = {}) {
     const encoder = new ReceiptPrinterEncoder({
         columns: 48,
@@ -391,6 +393,7 @@ export async function renderReceipt(item, { devicePath, power } = {}) {
         feedBeforeCut: 5,
         feedAfterBlock: false,
         newline: "\n",
+        codepageMapping: CODEPAGE_MAPPING,
     });
 
     // Encode in segments so the printer and renderer can each get their own leading/trailing commands
@@ -417,6 +420,7 @@ export async function renderReceipt(item, { devicePath, power } = {}) {
         width: encoder.printableWidth,
         commands: [],
         capabilities: encoder.printerCapabilities,
+        codepageMapping: CODEPAGE_MAPPING,
     });
 
     const items = renderer.render(Buffer.concat([initBytes, leadingNewlineBytes, bodyBytes]));
