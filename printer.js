@@ -387,7 +387,7 @@ function queuePrint(path, bytes, power) {
 export async function renderReceipt(item, { devicePath, power } = {}) {
     const encoder = new ReceiptPrinterEncoder({
         columns: 48,
-        imageMode: "column",
+        imageMode: "raster",
         feedBeforeCut: 5,
         feedAfterBlock: false,
         newline: "\n",
