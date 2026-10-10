@@ -2,7 +2,7 @@ import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { ReceiptPrinterRenderer, stitch, toPng } from "@point-of-sale/receipt-printer-renderer";
 import { writeFile } from "node:fs/promises";
 import sharp from "sharp";
-import { CustomCharacters } from "./custom-characters.js";
+import { CustomCharacters, MAX_GLYPHS } from "./custom-characters.js";
 
 // Render a run of only emoji (and joiners/variation selectors) as an image
 const EMOJI_ONLY_REGEX = /^(?=.*\p{Extended_Pictographic})[\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F\u200D\p{Zs}\t]+$/u;
@@ -270,6 +270,7 @@ function wrapParts(parts, width) {
     let wrapped = false;
     let line = [];
     let columns = 0;
+    let glyphs = 0;
     let word = [];
     let wordWidth = 0;
 
@@ -277,6 +278,7 @@ function wrapParts(parts, width) {
         lines.push(line);
         line = [];
         columns = 0;
+        glyphs = 0;
     };
 
     const flushWord = () => {
@@ -293,12 +295,14 @@ function wrapParts(parts, width) {
         }
         for (const atom of word) {
             const size = partWidth(atom);
-            if (columns + size > width) {
+            const glyphSize = typeof atom === "string" ? 0 : size;
+            if (columns + size > width || glyphs + glyphSize > MAX_GLYPHS) {
                 wrapped = true;
                 pushLine();
             }
             line.push(atom);
             columns += size;
+            glyphs += glyphSize;
         }
         word = [];
         wordWidth = 0;

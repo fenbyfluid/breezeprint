@@ -3,7 +3,7 @@ import test from "node:test";
 import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
 import { ReceiptPrinterRenderer, stitch } from "@point-of-sale/receipt-printer-renderer";
 import sharp from "sharp";
-import { CustomCharacters } from "./custom-characters.js";
+import { CustomCharacters, FIRST_CODE } from "./custom-characters.js";
 
 function createEncoder() {
     const encoder = new ReceiptPrinterEncoder({ columns: 48, newline: "\n" });
@@ -84,10 +84,11 @@ test("each print defines the next codes and switches glyphs on only while printi
     encoder.codepage("auto");
     const characters = new CustomCharacters(encoder);
     const image = await canvas(12);
+    const other = await canvas(12, [[1, 1]]);
     encoder.text("A");
     characters.print(image);
     encoder.text("!");
-    characters.print(image);
+    characters.print(other);
     encoder.text("B");
     encoder.newline();
 
@@ -99,11 +100,11 @@ test("each print defines the next codes and switches glyphs on only while printi
     const second = bytes.indexOf(selected, firstEnd + standard.length);
     const secondEnd = bytes.indexOf(standard, second);
 
-    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, 0x21, 0x21])) >= 0);
-    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, 0x22, 0x22])) >= 0);
+    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, FIRST_CODE, FIRST_CODE])) >= 0);
+    assert.ok(bytes.indexOf(Buffer.from([0x1b, 0x26, 3, FIRST_CODE + 1, FIRST_CODE + 1])) >= 0);
     assert.ok(first >= 0 && firstEnd > first && second > firstEnd && secondEnd > second);
-    assert.ok(bytes.subarray(first + selected.length, firstEnd).includes(0x21));
-    assert.ok(bytes.subarray(second + selected.length, secondEnd).includes(0x22));
+    assert.ok(bytes.subarray(first + selected.length, firstEnd).includes(FIRST_CODE));
+    assert.ok(bytes.subarray(second + selected.length, secondEnd).includes(FIRST_CODE + 1));
     assert.ok(bytes.subarray(firstEnd + standard.length, second).includes(0x21));
     assert.ok(bytes.subarray(secondEnd + standard.length).includes(0x42));
 });
@@ -130,14 +131,14 @@ test("rejects malformed raw input without reserving a code", async () => {
     }
     assert.equal(CustomCharacters.columns(image), 1);
     characters.print(image);
-    assert.ok(Buffer.from(encoder.encode()).indexOf(Buffer.from([0x1b, 0x26, 3, 0x21, 0x21])) >= 0);
+    assert.ok(Buffer.from(encoder.encode()).indexOf(Buffer.from([0x1b, 0x26, 3, FIRST_CODE, FIRST_CODE])) >= 0);
 });
 
 test("rejects glyphs wider than the line or beyond the remaining slots", async () => {
     const tooWide = await canvas(12 * 49);
     assert.throws(() => new CustomCharacters(createEncoder()).print(tooWide), /printable line width/);
     const characters = new CustomCharacters(createEncoder());
-    const full = await canvas(12 * 48);
+    const full = await canvas(12 * 36);
     characters.print(full);
     assert.throws(() => characters.print(full), /No printable custom character slots/);
 });

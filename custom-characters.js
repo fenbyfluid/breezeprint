@@ -1,7 +1,12 @@
 import Dither from "canvas-dither";
 
-const FIRST_CODE = 0x21;
-const LAST_CODE = 0x7e;
+// The specification says 0x20..0x7E inclusive, but in practice the printer supports fewer custom characters
+// The limit appears to depend on the density of the glyphs, with denser glyphs reducing the number of supported characters
+// This limit was found testing with the black square unicode character (U+2588), which is hopefully a worst case
+export const FIRST_CODE = 0x20;
+export const LAST_CODE = 0x43;
+export const MAX_GLYPHS = LAST_CODE - FIRST_CODE + 1;
+
 const GLYPH_WIDTH = 12;
 const GLYPH_HEIGHT = 24;
 const SELECT_CUSTOM = Uint8Array.from([0x1b, 0x25, 1]);
@@ -57,9 +62,10 @@ export class CustomCharacters {
             autoCenterBitmap(bitmap);
         }
 
-        const command = [0x1b, 0x26, 3, this.#nextCode, this.#nextCode + length - 1];
+        // One command per glyph: redefining a multi-glyph range over differently sized earlier ranges garbled the footer logo
         for (let glyph = 0; glyph < length; glyph++) {
-            command.push(GLYPH_WIDTH);
+            const code = this.#nextCode + glyph;
+            const command = [0x1b, 0x26, 3, code, code, GLYPH_WIDTH];
             for (let column = 0; column < GLYPH_WIDTH; column++) {
                 for (let block = 0; block < 3; block++) {
                     let bits = 0;
@@ -71,10 +77,10 @@ export class CustomCharacters {
                     command.push(bits);
                 }
             }
+            this.#encoder.raw(Uint8Array.from(command));
         }
 
         const codes = Array.from({ length }, (_, index) => this.#nextCode + index);
-        this.#encoder.raw(Uint8Array.from(command));
         this.#encoder.raw(SELECT_CUSTOM);
         this.#encoder.text(String.fromCharCode(...codes));
         this.#encoder.raw(SELECT_STANDARD);
