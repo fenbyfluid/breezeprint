@@ -32,6 +32,8 @@ function logMessage(message) {
         console.log(`[telegram] [${message.chat.type}] [sticker] ${from}: ${message.sticker.emoji ?? ""} (${message.sticker.file_id})`);
     } else if (message.photo) {
         console.log(`[telegram] [${message.chat.type}] [photo] ${from}: ${message.photo.length} size(s), largest ${message.photo.at(-1).file_id}${message.caption ? `, caption: ${message.caption}` : ""}`);
+    } else if (message.document) {
+        console.log(`[telegram] [${message.chat.type}] [document] ${from}: ${message.document.mime_type ?? "unknown type"} ${message.document.file_name ?? ""}${message.caption ? `, caption: ${message.caption}` : ""}`);
     } else {
         console.log(`[telegram] [${message.chat.type}] [unknown] ${from}:`, message);
     }
@@ -66,6 +68,11 @@ async function toReceiptItem(bot, message) {
         }
 
         return { source, from, image: await downloadFile(bot, fileId), text: message.caption, timestamp };
+    }
+
+    // Images sent as files arrive uncompressed
+    if (message.document?.mime_type?.startsWith("image/")) {
+        return { source, from, image: await downloadFile(bot, message.document.file_id), text: message.caption, timestamp };
     }
 
     return null;
