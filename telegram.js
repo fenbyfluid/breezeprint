@@ -1,4 +1,5 @@
 import { Bot, InputFile } from "grammy";
+import { paperEvents } from "./printer.js";
 
 async function downloadFile(bot, fileId) {
     const file = await bot.api.getFile(fileId);
@@ -74,6 +75,23 @@ export async function startTelegramBot({ token, onItemReceived } = {}) {
     // Create a bot object
     const bot = new Bot(token);
 
+    // Printed messages received since the paper was last taken
+    let pendingMessages = [];
+    paperEvents.on("taken", async () => {
+        const messages = pendingMessages;
+        pendingMessages = [];
+
+        const results = await Promise.allSettled(messages.map(({ chatId, messageId }) => {
+            return bot.api.setMessageReaction(chatId, messageId, [{ type: "emoji", emoji: "👀" }]);
+        }));
+
+        results.forEach((result) => {
+            if (result.status === "rejected") {
+                console.warn("[telegram] Failed to react to message:", result.reason?.message ?? result.reason);
+            }
+        });
+    });
+
     // Handle the start command explicitly as it's the first interaction with the bot
     bot.command("start", async (ctx) => {
         await ctx.reply("Welcome! Send me text, stickers, or images to print them.");
@@ -102,6 +120,10 @@ export async function startTelegramBot({ token, onItemReceived } = {}) {
         });
 
         const { image, printError } = await onItemReceived(item);
+
+        if (!printError) {
+            pendingMessages.push({ chatId: ctx.message.chat.id, messageId: ctx.message.message_id });
+        }
 
         // The image is still produced when the printer itself fails
         await ctx.replyWithPhoto(new InputFile(image, "receipt.png"), {

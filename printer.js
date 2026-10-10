@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { open } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -13,6 +14,9 @@ async function openPrinter(path) {
     }
 }
 
+/** Emits "taken" when printed paper is seen to have been removed from the output slot. */
+export const paperEvents = new EventEmitter();
+
 let paperAtOutput = false;
 
 // DLE EOT 1 replies with one byte; bit 7 is vendor-specific and set while printed paper is at the output slot
@@ -23,10 +27,14 @@ async function checkPaper(handle, reason) {
         await handle.read(status, 0, 1, null); // blocks until the printer replies, usually within 20ms
 
         const atOutput = (status[0] & 0x80) !== 0;
-        if (atOutput !== paperAtOutput) {
+        const wasAtOutput = paperAtOutput;
+        if (atOutput !== wasAtOutput) {
             console.log(`[printer] Paper ${atOutput ? "now at output" : "taken"} (${reason})`);
         }
         paperAtOutput = atOutput;
+        if (wasAtOutput && !atOutput) {
+            paperEvents.emit("taken");
+        }
     } catch (error) {
         console.warn(`[printer] Paper status check (${reason}) failed:`, error.message);
     }
