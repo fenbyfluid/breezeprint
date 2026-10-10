@@ -1,7 +1,8 @@
 import { basename } from "node:path";
 import { startMeshCore } from "./meshcore.js";
 import { startTelegramBot } from "./telegram.js";
-import { renderReceipt } from "./printer.js";
+import { renderItem } from "./render.js";
+import { print } from "./printer.js";
 import { PrinterPower } from "./power.js";
 
 // Whitespace-separated, as Telegram bot tokens contain a colon themselves
@@ -34,13 +35,21 @@ if (config.printerPowerGpio) {
 }
 
 const createOnItemReceived = (name) => async (item) => {
-    const result = await renderReceipt(item, { devicePath: config.printerDevicePath, power: printerPower });
+    const { bytes, image } = await renderItem(item);
+
+    let printError = null;
+    try {
+        await print(config.printerDevicePath, bytes, printerPower);
+    } catch (error) {
+        console.error(`[index] [${name}] Failed to send to printer`, error);
+        printError = error;
+    }
 
     console.log(`[index] [${name}] Processed item`,
         item,
-        `data:image/png;base64,${Buffer.from(result.image, "binary").toString("base64")}`);
+        `data:image/png;base64,${Buffer.from(image, "binary").toString("base64")}`);
 
-    return result;
+    return { image, printError };
 };
 
 if (config.telegramBotTokens.length === 0) {

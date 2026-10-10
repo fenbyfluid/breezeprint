@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ReceiptPrinterEncoder from "@point-of-sale/receipt-printer-encoder";
-import { renderItem } from "./printer.js";
+import { encodeItem } from "./render.js";
 import { FIRST_CODE, MAX_GLYPHS } from "./custom-characters.js";
 
 const item = { source: "test", from: "user", timestamp: 1720000000 };
@@ -9,7 +9,7 @@ const item = { source: "test", from: "user", timestamp: 1720000000 };
 async function receipt(text, from = item.from, source = item.source) {
     const encoder = new ReceiptPrinterEncoder({ columns: 48, imageMode: "column", feedBeforeCut: 0, feedAfterBlock: false, newline: "\n" });
     encoder.initialize();
-    await renderItem(encoder, { ...item, text, from, source });
+    await encodeItem(encoder, { ...item, text, from, source });
     return Buffer.from(encoder.encode());
 }
 
