@@ -5,12 +5,13 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node --test *.test.js"
+    "test": "node --test *.test.js tools/*.test.js"
   },
   "author": "Erin <fenbyfluid@gmail.com>",
   "license": "ISC",
   "dependencies": {
     "@liamcottle/meshcore.js": "^1.15.0",
+    "@point-of-sale/codepage-encoder": "^3.0.2",
     "@point-of-sale/receipt-printer-encoder": "^4.0.1",
     "@point-of-sale/receipt-printer-renderer": "^1.1.0",
     "canvas-dither": "^1.0.1",

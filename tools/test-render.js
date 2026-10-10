@@ -1,4 +1,4 @@
-import { renderReceipt } from "./printer.js";
+import { renderReceipt } from "../printer.js";
 
 const sticker = Buffer.from([
     "UklGRkgmAABXRUJQVlA4WAoAAAAQAAAA/wEA/wEAQUxQSNoLAAAB8Eb/f9rItq1VLHCqJiS2kzTMxbxeNsRZzMyrAtW0VlWlqmExry7owmZYzMzM9JJ5ddK0oGliU8HiLpo8NYYtyUq1NYb+",
