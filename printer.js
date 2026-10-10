@@ -349,11 +349,17 @@ async function printLine(encoder, ...args) {
     encoder.newline();
 }
 
-async function sendToPrinter(path, bytes) {
+async function sendToPrinter(path, bytes, power) {
     if (!path) {
         console.log("[printer] command bytes:", Buffer.from(bytes).toString("hex"));
 
         throw new Error("no printer configured");
+    }
+
+    try {
+        await power?.acquire();
+    } catch (error) {
+        throw new Error("printer failed to power on", { cause: error });
     }
 
     try {
@@ -364,19 +370,21 @@ async function sendToPrinter(path, bytes) {
         }
         
         throw new Error("unknown error", { cause: error });
+    } finally {
+        power?.release();
     }
 }
 
 // Items can be delivered concurrently, so jobs must not interleave on the port
 let printQueue = Promise.resolve();
 
-function queuePrint(path, bytes) {
-    const job = printQueue.then(() => sendToPrinter(path, bytes));
+function queuePrint(path, bytes, power) {
+    const job = printQueue.then(() => sendToPrinter(path, bytes, power));
     printQueue = job.catch(() => {});
     return job;
 }
 
-export async function renderReceipt(item, { devicePath } = {}) {
+export async function renderReceipt(item, { devicePath, power } = {}) {
     const encoder = new ReceiptPrinterEncoder({
         columns: 48,
         imageMode: "column",
@@ -398,7 +406,7 @@ export async function renderReceipt(item, { devicePath } = {}) {
 
     let printError = null;
     try {
-        await queuePrint(devicePath, Buffer.concat([initBytes, bodyBytes, cutBytes]));
+        await queuePrint(devicePath, Buffer.concat([initBytes, bodyBytes, cutBytes]), power);
     } catch (error) {
         console.error("[printer] Failed to send to printer", error);
         printError = error;

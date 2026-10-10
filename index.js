@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { startMeshCore } from "./meshcore.js";
 import { startTelegramBot } from "./telegram.js";
 import { renderReceipt } from "./printer.js";
+import { PrinterPower } from "./power.js";
 
 // Whitespace-separated, as Telegram bot tokens contain a colon themselves
 const splitList = (value) => value?.split(/\s+/).filter(Boolean) ?? [];
@@ -11,10 +12,29 @@ const config = {
     meshcoreSerialPaths: splitList(process.env.MESHCORE_SERIAL_PATH),
     meshcoreLogRxData: process.env.MESHCORE_LOG_RX_DATA === "true",
     telegramBotTokens: splitList(process.env.TELEGRAM_BOT_TOKEN),
+    printerPowerGpio: process.env.PRINTER_POWER_GPIO,
+    printerPowerIdleHours: Number(process.env.PRINTER_POWER_IDLE_HOURS ?? 36),
+    printerPowerWaitSeconds: Number(process.env.PRINTER_POWER_WAIT_SECONDS ?? 30),
+    printerPowerSettleMs: Number(process.env.PRINTER_POWER_SETTLE_MS ?? 1000),
 };
 
+let printerPower = null;
+if (config.printerPowerGpio) {
+    if (!config.printerDevicePath) {
+        throw new Error("PRINTER_POWER_GPIO requires PRINTER_DEVICE_PATH");
+    }
+    printerPower = new PrinterPower({
+        gpio: config.printerPowerGpio,
+        devicePath: config.printerDevicePath,
+        idleMs: config.printerPowerIdleHours * 60 * 60 * 1000,
+        waitMs: config.printerPowerWaitSeconds * 1000,
+        settleMs: config.printerPowerSettleMs,
+    });
+    await printerPower.init();
+}
+
 const createOnItemReceived = (name) => async (item) => {
-    const result = await renderReceipt(item, { devicePath: config.printerDevicePath });
+    const result = await renderReceipt(item, { devicePath: config.printerDevicePath, power: printerPower });
 
     console.log(`[index] [${name}] Processed item`,
         item,
