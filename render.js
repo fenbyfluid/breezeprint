@@ -46,9 +46,19 @@ function centerImage(image, printableWidth) {
         .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 }
 
+/** @typedef {{ text: string, bold?: boolean, underline?: boolean, invert?: boolean }} TextSegment */
+
+function normalizeSegments(text) {
+    const list = typeof text === "string" ? [text] : text ?? [];
+    return list.map((segment) => (typeof segment === "string" ? { text: segment } : segment)).filter((segment) => segment.text);
+}
+
+const isStyled = ({ bold, underline, invert }) => Boolean(bold || underline || invert);
+const sameStyle = (a, b) => Boolean(a.bold) === Boolean(b.bold) && Boolean(a.underline) === Boolean(b.underline) && Boolean(a.invert) === Boolean(b.invert);
+
 /**
  * @param {ReceiptPrinterEncoder} encoder 
- * @param {{ text?: string, image?: Buffer, source: string, from: string, timestamp: number }} item 
+ * @param {{ text?: string | Array<string | TextSegment>, image?: Buffer, source: string, from: string, timestamp: number }} item 
  * @param {{ compensate?: boolean }} [options] compensate: apply tone mapping for physical paper
  */
 export async function encodeItem(encoder, item, { compensate = false } = {}) {
@@ -71,7 +81,8 @@ export async function encodeItem(encoder, item, { compensate = false } = {}) {
     // Body
     encoder.codepage("auto");
     const maxBodyPct = 0.85;
-    if (!item.image && !item.text) {
+    const segments = normalizeSegments(item.text);
+    if (!item.image && !segments.length) {
         throw new Error("Item has no image data or text");
     }
 
@@ -90,10 +101,11 @@ export async function encodeItem(encoder, item, { compensate = false } = {}) {
         encoder.image(image, { algorithm: "atkinson" });
     }
 
-    if (item.text) {
-        if (EMOJI_ONLY_REGEX.test(item.text)) {
+    if (segments.length) {
+        // Matches Telegram, which only enlarges emoji sent as a single unformatted run
+        if (segments.length === 1 && !isStyled(segments[0]) && EMOJI_ONLY_REGEX.test(segments[0].text)) {
             const spacer = process.platform === "darwin" ? "\u2002" : ""; // Apple Emoji needs some more space
-            const emojiText = item.text.replace(/\s/gu, "");
+            const emojiText = segments[0].text.replace(/\s/gu, "");
             const renderSize = Math.floor(encoder.printableWidth * maxBodyPct);
             const spaced = Array.from(GRAPHEME_SEGMENTER.segment(emojiText), ({ segment }) => segment).join(spacer);
             const rendered = await sharp({ text: { text: spaced, width: renderSize, height: renderSize, wrap: "none", rgba: true } })
@@ -108,7 +120,7 @@ export async function encodeItem(encoder, item, { compensate = false } = {}) {
             encoder.image(image, { algorithm: "atkinson" });
         } else {
             const maxTextColumns = Math.ceil(encoder.columns * 0.85);
-            const { lines, wrapped } = wrapParts(await toParts(item.text), maxTextColumns);
+            const { lines, wrapped } = wrapParts(await toParts(...segments), maxTextColumns);
             
             if (item.image || lines.length < 3) {
                 encoder.newline();
@@ -166,28 +178,32 @@ async function encodeItemTrailer(encoder, item, compensate) {
 }
 
 /**
- * A part is either plain text or `{ image, options? }`, a raw (12*N)x24 RGBA image printed as custom characters.
- * Strings are split into plain text and rasterized emoji parts.
+ * A part is plain text, a styled `{ text, bold, underline, invert }` run, or `{ image, options? }`,
+ * a raw (12*N)x24 RGBA image printed as custom characters.
+ * Strings and segments are split into text and rasterized emoji parts; emoji are never styled.
  */
 async function toParts(...args) {
     const parts = [];
 
     for (const arg of args) {
-        if (typeof arg !== "string") {
+        if (typeof arg !== "string" && !("text" in arg)) {
             parts.push(arg);
             continue;
         }
 
+        const { text, bold, underline, invert } = typeof arg === "string" ? { text: arg } : arg;
+        const style = { bold: Boolean(bold), underline: Boolean(underline), invert: Boolean(invert) };
+        const toTextPart = (value) => (isStyled(style) ? { text: value, ...style } : value);
         let plain = "";
 
-        for (const { segment } of GRAPHEME_SEGMENTER.segment(arg)) {
+        for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
             if (!INLINE_EMOJI_REGEX.test(segment)) {
                 plain += segment;
                 continue;
             }
 
             if (plain) {
-                parts.push(plain);
+                parts.push(toTextPart(plain));
                 plain = "";
             }
 
@@ -195,7 +211,7 @@ async function toParts(...args) {
         }
 
         if (plain) {
-            parts.push(plain);
+            parts.push(toTextPart(plain));
         }
     }
 
@@ -219,11 +235,11 @@ async function rasterizeEmoji(emoji) {
 }
 
 function partColumns(part) {
-    if (typeof part !== "string") {
+    if (typeof part !== "string" && "image" in part) {
         return CustomCharacters.columns(part.image);
     }
 
-    return Array.from(GRAPHEME_SEGMENTER.segment(part)).length;
+    return Array.from(GRAPHEME_SEGMENTER.segment(typeof part === "string" ? part : part.text)).length;
 }
 
 function alignLeftRight(left, right, width) {
@@ -317,12 +333,16 @@ function wrapParts(parts, width) {
             pushLine();
         }
         if (columns) {
-            line.push(" ");
+            // Keep a styled run unbroken across the space between two words
+            const before = line.at(-1);
+            const after = word[0];
+            const joined = typeof before !== "string" && typeof after !== "string" && "text" in before && "text" in after && sameStyle(before, after);
+            line.push(joined ? { ...before, text: " " } : " ");
             columns++;
         }
         for (const atom of word) {
             const size = partColumns(atom);
-            const glyphSize = typeof atom === "string" ? 0 : size;
+            const glyphSize = typeof atom !== "string" && "image" in atom ? size : 0;
             if (columns + size > width || glyphs + glyphSize > MAX_GLYPHS) {
                 wrapped = true;
                 pushLine();
@@ -336,12 +356,17 @@ function wrapParts(parts, width) {
     };
 
     for (const part of parts) {
-        const atoms = typeof part === "string" ? Array.from(GRAPHEME_SEGMENTER.segment(part), ({ segment }) => segment) : [part];
+        const atoms = typeof part === "string"
+            ? Array.from(GRAPHEME_SEGMENTER.segment(part), ({ segment }) => segment)
+            : "text" in part
+                ? Array.from(GRAPHEME_SEGMENTER.segment(part.text), ({ segment }) => ({ ...part, text: segment }))
+                : [part];
         for (const atom of atoms) {
-            if (atom === "\n" || atom === "\r\n") {
+            const atomText = typeof atom === "string" ? atom : atom.text;
+            if (atomText === "\n" || atomText === "\r\n") {
                 flushWord();
                 pushLine();
-            } else if (typeof atom === "string" && /^\s+$/u.test(atom)) {
+            } else if (atomText !== undefined && /^\s+$/u.test(atomText)) {
                 flushWord();
             } else {
                 word.push(atom);
@@ -358,26 +383,46 @@ function wrapParts(parts, width) {
 async function encodeLine(encoder, compensate, ...args) {
     const characters = new CustomCharacters(encoder);
     let plain = "";
+    let plainStyle = {};
+
+    const flushPlain = () => {
+        if (!plain) {
+            return;
+        }
+
+        const styled = isStyled(plainStyle);
+        if (styled) {
+            encoder.bold(Boolean(plainStyle.bold)).underline(Boolean(plainStyle.underline)).invert(Boolean(plainStyle.invert));
+        }
+
+        encoder.text(plain);
+        if (styled) {
+            encoder.bold(false).underline(false).invert(false);
+        }
+
+        plain = "";
+    };
 
     for (const part of await toParts(...args)) {
-        if (typeof part === "string") {
-            plain += part;
+        if (typeof part === "string" || "text" in part) {
+            const style = typeof part === "string" ? {} : part;
+            if (plain && !sameStyle(plainStyle, style)) {
+                flushPlain();
+            }
+
+            plainStyle = style;
+            plain += typeof part === "string" ? part : part.text;
             continue;
         }
 
-        if (plain) {
-            encoder.text(plain);
-            plain = "";
-        }
+        flushPlain();
 
         // Only dithered parts are tone-compensated; thresholded parts (icons, ellipsis) are pure black and white
         const dithered = (part.options?.algorithm ?? "threshold") !== "threshold";
         characters.print(compensate && dithered ? compensateTone(part.image) : part.image, part.options);
     }
 
-    if (plain) {
-        encoder.text(plain);
-    }
+    flushPlain();
 
     encoder.newline();
 }

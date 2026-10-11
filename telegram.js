@@ -39,13 +39,55 @@ function logMessage(message) {
     }
 }
 
+// The printer has no italic, strikethrough or spoiler, so they borrow the nearest style
+const ENTITY_STYLES = {
+    bold: "bold",
+    italic: "bold",
+    underline: "underline",
+    strikethrough: "underline",
+    spoiler: "invert",
+};
+
+// Entity offsets are in UTF-16 code units, matching JS string indices
+export function toTextSegments(text, entities = []) {
+    const styled = entities.filter((entity) => ENTITY_STYLES[entity.type]);
+    if (!styled.length) {
+        return text;
+    }
+
+    const cuts = [...new Set([0, text.length, ...styled.flatMap(({ offset, length }) => [offset, offset + length])])]
+        .filter((cut) => cut >= 0 && cut <= text.length)
+        .sort((a, b) => a - b);
+
+    const segments = [];
+    for (let i = 0; i < cuts.length - 1; i++) {
+        const [start, end] = [cuts[i], cuts[i + 1]];
+        const style = {};
+        for (const entity of styled) {
+            if (entity.offset <= start && entity.offset + entity.length >= end) {
+                style[ENTITY_STYLES[entity.type]] = true;
+            }
+        }
+
+        const previous = segments.at(-1);
+        const sameStyle = previous && ["bold", "underline", "invert"].every((key) => Boolean(previous[key]) === Boolean(style[key]));
+        if (sameStyle) {
+            previous.text += text.slice(start, end);
+        } else {
+            segments.push({ text: text.slice(start, end), ...style });
+        }
+    }
+
+    return segments;
+}
+
 async function toReceiptItem(bot, message) {
     const source = "telegram";
     const from = telegramSenderName(message.from);
     const timestamp = message.date;
 
     if (message.text) {
-        return { source, from, text: message.text, timestamp };
+        return { source, from, text: toTextSegments(message.text, message.entities), timestamp };
     }
 
     // Animated/video stickers can't be printed, fall back to their static thumbnail
@@ -67,12 +109,12 @@ async function toReceiptItem(bot, message) {
             return null;
         }
 
-        return { source, from, image: await downloadFile(bot, fileId), text: message.caption, timestamp };
+        return { source, from, image: await downloadFile(bot, fileId), text: toTextSegments(message.caption, message.caption_entities), timestamp };
     }
 
     // Images sent as files arrive uncompressed
     if (message.document?.mime_type?.startsWith("image/")) {
-        return { source, from, image: await downloadFile(bot, message.document.file_id), text: message.caption, timestamp };
+        return { source, from, image: await downloadFile(bot, message.document.file_id), text: toTextSegments(message.caption, message.caption_entities), timestamp };
     }
 
     return null;

@@ -84,3 +84,46 @@ test("uses two custom characters and a two-column gap for overflowing sender nam
         assert.equal(bytes.subarray(standardIndex, source).filter((byte) => byte === 0x20).length, 2);
     }
 });
+
+const BOLD_ON = Buffer.from([0x1b, 0x45, 1]);
+const UNDERLINE_ON = Buffer.from([0x1b, 0x2d, 1]);
+const INVERT_ON = Buffer.from([0x1d, 0x42, 1]);
+
+test("prints each style flag around only its own run", async () => {
+    const bytes = await receipt([
+        "plain ",
+        { text: "bold", bold: true },
+        " ",
+        { text: "under", underline: true },
+        " ",
+        { text: "spoiler", invert: true },
+    ]);
+
+    for (const [on, word] of [[BOLD_ON, "bold"], [UNDERLINE_ON, "under"], [INVERT_ON, "spoiler"]]) {
+        const start = bytes.indexOf(on);
+        assert.ok(start >= 0);
+        assert.ok(bytes.indexOf(Buffer.from(word), start) > start);
+        assert.equal(countCommands(bytes, on), 1);
+    }
+    assert.ok(bytes.indexOf(BOLD_ON) > bytes.indexOf(Buffer.from("plain")));
+});
+
+test("keeps a style continuous across the space between two styled words", async () => {
+    const bytes = await receipt([{ text: "two words", underline: true }]);
+    assert.equal(countCommands(bytes, UNDERLINE_ON), 1);
+    assert.ok(bytes.indexOf(Buffer.from("two words")) > 0);
+});
+
+test("a segment array without styling matches the plain string", async () => {
+    assert.deepEqual(await receipt(["Hello ", { text: "world" }]), await receipt("Hello world"));
+});
+
+test("rejects an item whose text segments are all empty", async () => {
+    await assert.rejects(receipt([""]), /no image data or text/);
+});
+
+test("rasterizes emoji inline in styled text instead of enlarging them", async () => {
+    const bytes = await receipt([{ text: "👍", bold: true }]);
+    assert.equal(countCommands(bytes, [0x1b, 0x26, 3]), 2);
+    assert.equal(countCommands(bytes, BOLD_ON), 0);
+});
