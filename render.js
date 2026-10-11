@@ -8,6 +8,31 @@ const EMOJI_ONLY_REGEX = /^(?=.*\p{Extended_Pictographic})[\p{Extended_Pictograp
 const INLINE_EMOJI_REGEX = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
+// Measured [wanted ink, ink to send] points; the paper prints much darker than the preview
+const INK_CURVE = [
+    [0, 0], [0.08, 0.15], [0.25, 0.25], [0.3, 0.26],
+    [0.45, 0.35], [0.7, 0.46], [0.9, 0.57], [0.95, 0.7], [1, 0.75],
+];
+
+const TONE_LUT = Uint8Array.from({ length: 256 }, (_, value) => {
+    const ink = 1 - value / 255;
+    let i = 1;
+    while (i < INK_CURVE.length - 1 && ink > INK_CURVE[i][0]) i++;
+    const [x0, y0] = INK_CURVE[i - 1];
+    const [x1, y1] = INK_CURVE[i];
+    return Math.round(255 * (1 - (y0 + ((y1 - y0) * (ink - x0)) / (x1 - x0))));
+});
+
+function compensateTone(image) {
+    const { data, info } = image;
+    for (let i = 0; i < data.length; i += info.channels) {
+        data[i] = TONE_LUT[data[i]];
+        data[i + 1] = TONE_LUT[data[i + 1]];
+        data[i + 2] = TONE_LUT[data[i + 2]];
+    }
+    return image;
+}
+
 function centerImage(image, printableWidth) {
     if (image.info.width >= printableWidth) {
         return image;
@@ -24,8 +49,9 @@ function centerImage(image, printableWidth) {
 /**
  * @param {ReceiptPrinterEncoder} encoder 
  * @param {{ text?: string, image?: Buffer, source: string, from: string, timestamp: number }} item 
+ * @param {{ compensate?: boolean }} [options] compensate: apply tone mapping for physical paper
  */
-export async function encodeItem(encoder, item) {
+export async function encodeItem(encoder, item, { compensate = false } = {}) {
     const itemTimestamp = new Date(item.timestamp * 1000);
     const timeLabel = [
         String(itemTimestamp.getHours()).padStart(2, '0'),
@@ -38,7 +64,7 @@ export async function encodeItem(encoder, item) {
     ].join("/");
 
     // Header
-    await encodeLine(encoder, ...alignLeftRight([timeLabel], [dateLabel], encoder.columns));
+    await encodeLine(encoder, compensate, ...alignLeftRight([timeLabel], [dateLabel], encoder.columns));
     encoder.rule();
     encoder.newline();
     
@@ -58,7 +84,8 @@ export async function encodeItem(encoder, item) {
             .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 
         // Pad the shrunk image back up to the printable width, centering it
-        const image = await centerImage(resized, encoder.printableWidth);
+        const centered = await centerImage(resized, encoder.printableWidth);
+        const image = compensate ? compensateTone(centered) : centered;
 
         encoder.image(image, { algorithm: "atkinson" });
     }
@@ -75,7 +102,8 @@ export async function encodeItem(encoder, item) {
                 .flatten({ background: "white" })
                 .raw().ensureAlpha().toBuffer({ resolveWithObject: true });
 
-            const image = await centerImage(rendered, encoder.printableWidth);
+            const centered = await centerImage(rendered, encoder.printableWidth);
+            const image = compensate ? compensateTone(centered) : centered;
 
             encoder.image(image, { algorithm: "atkinson" });
         } else {
@@ -89,13 +117,13 @@ export async function encodeItem(encoder, item) {
             if (!wrapped) {
                 encoder.align("center");
                 for (const line of lines) {
-                    await encodeLine(encoder, ...line);
+                    await encodeLine(encoder, compensate, ...line);
                 }
                 encoder.align("left");
             } else {
                 const leftPadding = Math.floor((encoder.columns - maxTextColumns) / 2);
                 for (const line of lines) {
-                    await encodeLine(encoder, " ".repeat(leftPadding), ...line);
+                    await encodeLine(encoder, compensate, " ".repeat(leftPadding), ...line);
                 }
             }
 
@@ -108,10 +136,10 @@ export async function encodeItem(encoder, item) {
     // Trailer
     encoder.newline();
     encoder.rule();
-    await encodeItemTrailer(encoder, item);
+    await encodeItemTrailer(encoder, item, compensate);
 }
 
-async function encodeItemTrailer(encoder, item) {
+async function encodeItemTrailer(encoder, item, compensate) {
     // The icons here are all 36x24 1-bit gifs, the icons are aligned 1px from the right edge of the canvas
     const knownSources = {
         meshcore: { 
@@ -134,7 +162,7 @@ async function encodeItemTrailer(encoder, item) {
         ? { image: await sharp(Buffer.from(sourceInfo.icon, "base64")).raw().ensureAlpha().toBuffer({ resolveWithObject: true }) }
         : sourceInfo.label;
 
-    await encodeLine(encoder, ...alignLeftRight(await toParts(item.from), await toParts(source), encoder.columns));
+    await encodeLine(encoder, compensate, ...alignLeftRight(await toParts(item.from), await toParts(source), encoder.columns));
 }
 
 /**
@@ -327,7 +355,7 @@ function wrapParts(parts, width) {
     return { lines, wrapped };
 }
 
-async function encodeLine(encoder, ...args) {
+async function encodeLine(encoder, compensate, ...args) {
     const characters = new CustomCharacters(encoder);
     let plain = "";
 
@@ -342,7 +370,9 @@ async function encodeLine(encoder, ...args) {
             plain = "";
         }
 
-        characters.print(part.image, part.options);
+        // Only dithered parts are tone-compensated; thresholded parts (icons, ellipsis) are pure black and white
+        const dithered = (part.options?.algorithm ?? "threshold") !== "threshold";
+        characters.print(compensate && dithered ? compensateTone(part.image) : part.image, part.options);
     }
 
     if (plain) {
@@ -354,7 +384,7 @@ async function encodeLine(encoder, ...args) {
 
 const CODEPAGE_MAPPING = "youku";
 
-async function toPreviewImage(encoder, bytes) {
+async function toPreviewImage(encoder) {
     const renderer = new ReceiptPrinterRenderer({
         language: encoder.language,
         width: encoder.printableWidth,
@@ -364,7 +394,7 @@ async function toPreviewImage(encoder, bytes) {
     });
 
     // Combine the rendered items into a single paper bitmap
-    const paper = stitch(renderer.render(bytes));
+    const paper = stitch(renderer.render(encoder.encode()));
 
     // Pad the image from the 72mm printable area to the 80mm paper area
     // 32 pixels of padding each side
@@ -386,7 +416,7 @@ async function toPreviewImage(encoder, bytes) {
  * @param {Parameters<typeof encodeItem>[1]} item
  */
 export async function renderItem(item) {
-    const encoder = new ReceiptPrinterEncoder({
+    const createEncoder = () => new ReceiptPrinterEncoder({
         columns: 48,
         imageMode: "raster",
         feedBeforeCut: 5,
@@ -395,19 +425,22 @@ export async function renderItem(item) {
         codepageMapping: CODEPAGE_MAPPING,
     });
 
-    // Encode in segments, as the preview has no use for the cut command
-    encoder.initialize();
-    const initBytes = encoder.encode();
-    encoder.newline();
-    const leadingNewlineBytes = encoder.encode();
-    await encodeItem(encoder, item);
-    encoder.newline();
-    const bodyBytes = encoder.encode();
-    encoder.cut("partial");
-    const cutBytes = encoder.encode();
+    // Preview: no tone mapping or cut
+    const previewEncoder = createEncoder();
+    previewEncoder.initialize();
+    previewEncoder.newline();
+    await encodeItem(previewEncoder, item);
+    previewEncoder.newline();
+
+    // Print: tone-mapped for the paper, ending with a cut
+    const printEncoder = createEncoder();
+    printEncoder.initialize();
+    await encodeItem(printEncoder, item, { compensate: true });
+    printEncoder.newline();
+    printEncoder.cut("partial");
 
     return {
-        bytes: Buffer.concat([initBytes, bodyBytes, cutBytes]),
-        image: await toPreviewImage(encoder, Buffer.concat([initBytes, leadingNewlineBytes, bodyBytes])),
+        bytes: printEncoder.encode(),
+        image: await toPreviewImage(previewEncoder),
     };
 }
